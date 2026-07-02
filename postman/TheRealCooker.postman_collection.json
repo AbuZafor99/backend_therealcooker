@@ -1,0 +1,860 @@
+{
+  "info": {
+    "_postman_id": "e99ec9ab-3c5d-44e7-b75d-6933224bac8d",
+    "name": "TheRealCooker Backend API",
+    "description": "Auto-generated from the Express codebase in backend_therealcooker.\n\nBase path mounted in server.js: `/api/v1` (see mainroute/index.js).\n\nAuth: most routes use `protect` middleware which expects `Authorization: Bearer <accessToken>`. Login/Register requests below auto-save `accessToken`/`refreshToken`/`userId` into collection variables via a test script, so once you run Login everything else just works.\n\nKNOWN ISSUES IN THE CURRENT CODEBASE (found during analysis, left untouched per request):\n1. `server.js` uses `path.join(...)` but never imports the `path` module -> server crashes on boot until fixed.\n2. `mainroute/index.js` never mounts `route/user.route.js` or `route/subscription.route.js`, so the whole 'Users' folder and 'Subscriptions' folder below are unreachable (404 via notFound handler) until someone adds `router.use(\"/users\", userRoutes)` and `router.use(\"/subscriptions\", subscriptionRoutes)`.\n3. `route/user.route.js` imports `controller/fcm.controller.js`, which does not exist in the repo -> importing that route file throws.\n4. `controller/user.controller.js` imports `Checklist`/`Report` models from `model/checklist.model.js` / `model/report.model.js`, neither of which exist -> 'Get User Details (Admin)' and 'Delete User (Admin)' will throw.\n5. `route/user.route.js` does `import upload from \"../middleware/multer.middleware.js\"` (default import) but that file only exports a named `upload` -> `upload` is `undefined`, so 'Update Profile', 'Create User (Admin)', and 'Update User (Admin)' will crash with `upload.single is not a function`.\n\nRequests affected by #2-#5 are marked '[BROKEN]' in their name/description so you know what to expect until the backend is fixed.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      { "key": "token", "value": "{{accessToken}}", "type": "string" }
+    ]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5000/api/v1", "type": "string" },
+    { "key": "accessToken", "value": "", "type": "string" },
+    { "key": "refreshToken", "value": "", "type": "string" },
+    { "key": "userId", "value": "", "type": "string" },
+    { "key": "accountId", "value": "", "type": "string" },
+    { "key": "guardianId", "value": "", "type": "string" },
+    { "key": "newsId", "value": "", "type": "string" },
+    { "key": "subscriptionId", "value": "", "type": "string" },
+    { "key": "otp", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Test User\",\n  \"email\": \"testuser@example.com\",\n  \"password\": \"Password123!\",\n  \"confirmPassword\": \"Password123!\",\n  \"userId\": \"testuser01\",\n  \"location\": { \"latitude\": 23.8103, \"longitude\": 90.4125 }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "register"]
+            },
+            "description": "Self-registration. Requires email, password & confirmPassword (must match)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const res = pm.response.json();",
+                  "  if (res.data?.accessToken) pm.collectionVariables.set('accessToken', res.data.accessToken);",
+                  "  if (res.data?.refreshToken) pm.collectionVariables.set('refreshToken', res.data.refreshToken);",
+                  "  if (res.data?._id) pm.collectionVariables.set('userId', res.data._id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"testuser@example.com\",\n  \"password\": \"Password123!\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "Logs in and returns accessToken + refreshToken. Auto-saved to collection variables by the test script."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const res = pm.response.json();",
+                  "  if (res.data?.accessToken) pm.collectionVariables.set('accessToken', res.data.accessToken);",
+                  "  if (res.data?.refreshToken) pm.collectionVariables.set('refreshToken', res.data.refreshToken);",
+                  "  if (res.data?._id) pm.collectionVariables.set('userId', res.data._id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "logout"]
+            },
+            "description": "Requires Authorization Bearer token. Clears refreshToken on the user."
+          }
+        },
+        {
+          "name": "Refresh Token",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh-token",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "refresh-token"]
+            }
+          }
+        },
+        {
+          "name": "Forgot Password",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"testuser@example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/forgot-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "forgot-password"]
+            },
+            "description": "Emails an OTP to the user and stores it on password_reset_token."
+          }
+        },
+        {
+          "name": "Verify OTP",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"testuser@example.com\",\n  \"otp\": \"{{otp}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/verify-otp",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "verify-otp"]
+            }
+          }
+        },
+        {
+          "name": "Reset Password",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"testuser@example.com\",\n  \"otp\": \"{{otp}}\",\n  \"newPassword\": \"NewPassword123!\",\n  \"confirmPassword\": \"NewPassword123!\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/reset-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "reset-password"]
+            }
+          }
+        },
+        {
+          "name": "Change Password",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"Password123!\",\n  \"newPassword\": \"NewPassword123!\",\n  \"confirmPassword\": \"NewPassword123!\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/change-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "change-password"]
+            },
+            "description": "Requires Authorization Bearer token."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Accounts",
+      "description": "All routes require Authorization Bearer token (route/account.route.js applies protect to the whole router).",
+      "item": [
+        {
+          "name": "Create Account",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountType\": \"bank\",\n  \"bankName\": \"Example Bank\",\n  \"accountNumberEncrypted\": \"encrypted-account-number-123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts"]
+            },
+            "description": "accountType: 'bank' | 'wallet'. bankName is required only when accountType is 'bank'."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const res = pm.response.json();",
+                  "  if (res.data?._id) pm.collectionVariables.set('accountId', res.data._id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Accounts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts"]
+            },
+            "description": "Returns the logged-in user's active accounts, each enriched with linked guardian info if any."
+          }
+        },
+        {
+          "name": "Get Account",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}"]
+            }
+          }
+        },
+        {
+          "name": "Update Account",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountType\": \"bank\",\n  \"bankName\": \"Updated Bank Name\",\n  \"accountNumberEncrypted\": \"encrypted-account-number-456\",\n  \"isActive\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}"]
+            },
+            "description": "All fields optional; only provided fields are updated."
+          }
+        },
+        {
+          "name": "Delete Account",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}"]
+            },
+            "description": "Also removes any guardian-account link for this account."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Guardians",
+      "description": "All routes require Authorization Bearer token.",
+      "item": [
+        {
+          "name": "Create Guardian",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Jane Guardian\",\n  \"email\": \"jane.guardian@example.com\",\n  \"phone\": \"+15551234567\",\n  \"relationship\": \"parent\",\n  \"accountIds\": [\"{{accountId}}\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/guardians",
+              "host": ["{{baseUrl}}"],
+              "path": ["guardians"]
+            },
+            "description": "relationship: 'parent' | 'spouse' | 'sibling' | 'other'. accountIds is optional and links existing accounts (must belong to the logged-in user)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const res = pm.response.json();",
+                  "  if (res.data?._id) pm.collectionVariables.set('guardianId', res.data._id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Guardians",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/guardians",
+              "host": ["{{baseUrl}}"],
+              "path": ["guardians"]
+            }
+          }
+        },
+        {
+          "name": "Get Guardian",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/guardians/{{guardianId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["guardians", "{{guardianId}}"]
+            }
+          }
+        },
+        {
+          "name": "Update Guardian",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Jane Guardian Updated\",\n  \"email\": \"jane.updated@example.com\",\n  \"phone\": \"+15559876543\",\n  \"relationship\": \"sibling\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/guardians/{{guardianId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["guardians", "{{guardianId}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Guardian",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/guardians/{{guardianId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["guardians", "{{guardianId}}"]
+            }
+          }
+        },
+        {
+          "name": "Update Guardian Accounts",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountIds\": [\"{{accountId}}\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/guardians/{{guardianId}}/accounts",
+              "host": ["{{baseUrl}}"],
+              "path": ["guardians", "{{guardianId}}", "accounts"]
+            },
+            "description": "Replaces the full set of accounts linked to this guardian with accountIds (array, required)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "News",
+      "item": [
+        {
+          "name": "Get News (public)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/news?category=tips",
+              "host": ["{{baseUrl}}"],
+              "path": ["news"],
+              "query": [
+                { "key": "category", "value": "tips", "description": "optional: tips | scam_alerts | fraud_warnings | alert | warning" }
+              ]
+            },
+            "description": "Only returns published news."
+          }
+        },
+        {
+          "name": "Get News By Id (public)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/news/{{newsId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["news", "{{newsId}}"]
+            },
+            "description": "Increments the news item's views counter."
+          }
+        },
+        {
+          "name": "Create News (admin)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "title", "value": "New Scam Alert", "type": "text" },
+                { "key": "category", "value": "scam_alerts", "type": "text" },
+                { "key": "description", "value": "Details about the latest scam pattern.", "type": "text" },
+                { "key": "coverImage", "type": "file", "src": "" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/news",
+              "host": ["{{baseUrl}}"],
+              "path": ["news"]
+            },
+            "description": "Requires Authorization Bearer token for an admin user. multipart/form-data; coverImage is optional (single file, field name must be 'coverImage')."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const res = pm.response.json();",
+                  "  if (res.data?._id) pm.collectionVariables.set('newsId', res.data._id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update News (admin)",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "title", "value": "Updated Scam Alert Title", "type": "text" },
+                { "key": "category", "value": "scam_alerts", "type": "text" },
+                { "key": "description", "value": "Updated description.", "type": "text" },
+                { "key": "isPublished", "value": "true", "type": "text" },
+                { "key": "coverImage", "type": "file", "src": "" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/news/{{newsId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["news", "{{newsId}}"]
+            },
+            "description": "Requires Authorization Bearer token for an admin user. All fields optional."
+          }
+        },
+        {
+          "name": "Delete News (admin)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/news/{{newsId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["news", "{{newsId}}"]
+            },
+            "description": "Requires Authorization Bearer token for an admin user."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Terms",
+      "item": [
+        {
+          "name": "Get Active Terms (public)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/terms",
+              "host": ["{{baseUrl}}"],
+              "path": ["terms"]
+            }
+          }
+        },
+        {
+          "name": "Get All Terms Versions (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/terms/all",
+              "host": ["{{baseUrl}}"],
+              "path": ["terms", "all"]
+            },
+            "description": "Requires Authorization Bearer token for an admin user."
+          }
+        },
+        {
+          "name": "Update / Create New Terms Version (admin)",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"Updated terms and conditions text...\",\n  \"version\": \"2.0\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/terms",
+              "host": ["{{baseUrl}}"],
+              "path": ["terms"]
+            },
+            "description": "Requires Authorization Bearer token for an admin user. Deactivates all previous versions and creates a new active one."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Subscriptions [BROKEN - route not mounted]",
+      "description": "route/subscription.route.js exists and is fully implemented, but mainroute/index.js never does router.use('/subscriptions', subscriptionRoutes). These requests will 404 until that's fixed.",
+      "item": [
+        {
+          "name": "Get Subscriptions (public)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/subscriptions?activeOnly=true",
+              "host": ["{{baseUrl}}"],
+              "path": ["subscriptions"],
+              "query": [{ "key": "activeOnly", "value": "true", "description": "optional" }]
+            }
+          }
+        },
+        {
+          "name": "Get Subscription By Id (public)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/subscriptions/{{subscriptionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["subscriptions", "{{subscriptionId}}"]
+            }
+          }
+        },
+        {
+          "name": "Create Subscription (admin)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Pro Plan\",\n  \"benefits\": [\"Unlimited guardians\", \"Priority support\"],\n  \"priceMonthly\": 9.99,\n  \"priceYearly\": 99.99,\n  \"isActive\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["subscriptions"]
+            },
+            "description": "Requires Authorization Bearer token for an admin user."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const res = pm.response.json();",
+                  "  if (res.data?._id) pm.collectionVariables.set('subscriptionId', res.data._id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Subscription (admin)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"priceMonthly\": 12.99,\n  \"isActive\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/subscriptions/{{subscriptionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["subscriptions", "{{subscriptionId}}"]
+            },
+            "description": "Requires Authorization Bearer token for an admin user."
+          }
+        },
+        {
+          "name": "Delete Subscription (admin)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/subscriptions/{{subscriptionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["subscriptions", "{{subscriptionId}}"]
+            },
+            "description": "Requires Authorization Bearer token for an admin user."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Users [BROKEN - route not mounted + import errors]",
+      "description": "route/user.route.js is never mounted in mainroute/index.js. It also currently fails to import at all because controller/fcm.controller.js does not exist, and several handlers reference missing Checklist/Report models or a broken multer import. Kept here so the collection matches the intended API surface once those are fixed.",
+      "item": [
+        {
+          "name": "Get Profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "profile"]
+            }
+          }
+        },
+        {
+          "name": "Update Profile [BROKEN - upload import]",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "name", "value": "Updated Name", "type": "text" },
+                { "key": "phone", "value": "+15551112222", "type": "text" },
+                { "key": "bio", "value": "New bio text", "type": "text" },
+                { "key": "gender", "value": "male", "type": "text" },
+                { "key": "dob", "value": "1995-05-15", "type": "text" },
+                { "key": "age", "value": "29", "type": "text" },
+                { "key": "address", "value": "123 Main St", "type": "text" },
+                { "key": "avatar", "type": "file", "src": "" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/users/update-profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "update-profile"]
+            },
+            "description": "multipart/form-data; avatar is optional (single file)."
+          }
+        },
+        {
+          "name": "Change Password",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"Password123!\",\n  \"newPassword\": \"NewPassword123!\",\n  \"confirmPassword\": \"NewPassword123!\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/users/change-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "change-password"]
+            }
+          }
+        },
+        {
+          "name": "Delete Own Account",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/delete-account",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "delete-account"]
+            }
+          }
+        },
+        {
+          "name": "Create User (admin) [BROKEN - upload import]",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "name", "value": "Admin Created User", "type": "text" },
+                { "key": "userId", "value": "adminuser01", "type": "text" },
+                { "key": "password", "value": "Password123!", "type": "text" },
+                { "key": "latitude", "value": "23.8103", "type": "text" },
+                { "key": "longitude", "value": "90.4125", "type": "text" },
+                { "key": "defaultRadius", "value": "100", "type": "text" },
+                { "key": "profilePhoto", "type": "file", "src": "" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/users/create",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "create"]
+            },
+            "description": "Requires Authorization Bearer token for an admin user. multipart/form-data; profilePhoto optional."
+          }
+        },
+        {
+          "name": "Get Users (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/admin/list?page=1&limit=8&search=",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "admin", "list"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "8" },
+                { "key": "search", "value": "", "description": "optional, matches name or userId" }
+              ]
+            },
+            "description": "Requires Authorization Bearer token for an admin user."
+          }
+        },
+        {
+          "name": "Get User Details (admin) [BROKEN - missing Checklist/Report models]",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/admin/list/{{userId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "admin", "list", "{{userId}}"]
+            },
+            "description": "Requires Authorization Bearer token for an admin user."
+          }
+        },
+        {
+          "name": "Update User (admin) [BROKEN - upload import]",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "name", "value": "Updated By Admin", "type": "text" },
+                { "key": "userId", "value": "adminuser01-updated", "type": "text" },
+                { "key": "password", "value": "NewPassword123!", "type": "text" },
+                { "key": "latitude", "value": "23.81", "type": "text" },
+                { "key": "longitude", "value": "90.41", "type": "text" },
+                { "key": "defaultRadius", "value": "150", "type": "text" },
+                { "key": "profilePhoto", "type": "file", "src": "" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/users/admin/list/{{userId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "admin", "list", "{{userId}}"]
+            },
+            "description": "Requires Authorization Bearer token for an admin user. All fields optional; latitude & longitude must be provided together."
+          }
+        },
+        {
+          "name": "Delete User (admin) [BROKEN - missing Checklist/Report models]",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/admin/list/{{userId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "admin", "list", "{{userId}}"]
+            },
+            "description": "Requires Authorization Bearer token for an admin user."
+          }
+        },
+        {
+          "name": "Update FCM Token [BROKEN - controller missing]",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fcmToken\": \"sample-device-fcm-token\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/users/update-fcm-token",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "update-fcm-token"]
+            },
+            "description": "controller/fcm.controller.js does not exist in the repo, so this route can't even be imported yet."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin Dashboard",
+      "description": "Requires Authorization Bearer token for an admin user (protect + isAdmin applied to the whole router).",
+      "item": [
+        {
+          "name": "Dashboard Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/dashboard/stats",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "dashboard", "stats"]
+            }
+          }
+        },
+        {
+          "name": "Recent Users",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/dashboard/recent-users",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "dashboard", "recent-users"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
