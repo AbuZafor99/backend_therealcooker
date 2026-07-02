@@ -5,6 +5,7 @@ import sendResponse from "../utils/sendResponse.js";
 import { Guardian } from "../model/guardian.model.js";
 import { Account } from "../model/account.model.js";
 import { GuardianAccount } from "../model/guardianAccount.model.js";
+import { User } from "../model/user.model.js";
 
 // Create guardian with selected accountIds
 export const createGuardian = catchAsync(async (req, res) => {
@@ -12,6 +13,15 @@ export const createGuardian = catchAsync(async (req, res) => {
 
   if (!name || !email || !phone) {
     throw new AppError(httpStatus.BAD_REQUEST, "Missing required fields");
+  }
+
+  // The protector must already be a registered user on the platform
+  const protectorUser = await User.findOne({ email });
+  if (!protectorUser) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Protector must have an active account"
+    );
   }
 
   // Create guardian
