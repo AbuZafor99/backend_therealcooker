@@ -7,7 +7,7 @@ import {
   getNewsById,
 } from "../controller/news.controller.js";
 import { protect, isAdmin } from "../middleware/auth.middleware.js";
-import { upload } from "../middleware/multer.middleware.js";
+import { uploadLocal } from "../middleware/multer.middleware.js";
 
 const router = express.Router();
 
@@ -19,8 +19,8 @@ router.get("/:id", getNewsById);
 router.use(protect);
 router.use(isAdmin);
 
-router.post("/", upload.single("coverImage"), createNews);
-router.put("/:id", upload.single("coverImage"), updateNews);
+router.post("/", uploadLocal.single("coverImage"), createNews);
+router.put("/:id", uploadLocal.single("coverImage"), updateNews);
 router.delete("/:id", deleteNews);
 
 export default router;
