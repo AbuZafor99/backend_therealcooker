@@ -30,15 +30,54 @@ export const register = catchAsync(async (req, res) => {
     );
   }
 
+  const otp = generateOTP(4);
+
   const user = await User.create({
     userId,
     name,
     email,
     password,
     textPassword: password,
-    verificationInfo: { token: "", verified: true }, // set to true for now, or use OTP
+    verificationInfo: { token: otp, verified: false },
     location,
   });
+
+  await sendEmail({
+    email: user.email,
+    subject: "Verify your email",
+    message: `Your OTP for email verification is: ${otp}`,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "OTP sent to your email for verification",
+    data: { _id: user._id, email: user.email },
+  });
+});
+
+// Verify signup OTP - marks the account verified and issues tokens (like login)
+export const verifySignupOtp = catchAsync(async (req, res) => {
+  const { email, otp } = req.body;
+  if (!email || !otp) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Email and OTP are required");
+  }
+
+  const user = await User.findOne({ email });
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  if (user.verificationInfo.verified) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Email is already verified");
+  }
+
+  if (!user.verificationInfo.token || user.verificationInfo.token !== otp) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid OTP");
+  }
+
+  user.verificationInfo.verified = true;
+  user.verificationInfo.token = "";
 
   const jwtPayload = {
     _id: user._id,
@@ -64,8 +103,42 @@ export const register = catchAsync(async (req, res) => {
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: "User registered successfully",
+    message: "Email verified successfully",
     data: userObj,
+  });
+});
+
+// Resend signup OTP
+export const resendSignupOtp = catchAsync(async (req, res) => {
+  const { email } = req.body;
+  if (!email) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Email is required");
+  }
+
+  const user = await User.findOne({ email });
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  if (user.verificationInfo.verified) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Email is already verified");
+  }
+
+  const otp = generateOTP(4);
+  user.verificationInfo.token = otp;
+  await user.save();
+
+  await sendEmail({
+    email: user.email,
+    subject: "Verify your email",
+    message: `Your OTP for email verification is: ${otp}`,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "OTP resent to your email",
+    data: null,
   });
 });
 
@@ -84,6 +157,13 @@ export const login = catchAsync(async (req, res) => {
   const isMatch = await User.isPasswordMatched(password, user.password);
   if (!isMatch) {
     throw new AppError(httpStatus.UNAUTHORIZED, "Invalid credentials");
+  }
+
+  if (!user.verificationInfo.verified) {
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      "Please verify your email before logging in"
+    );
   }
 
   const jwtPayload = {

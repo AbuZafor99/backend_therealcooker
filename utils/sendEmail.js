@@ -1,5 +1,5 @@
 import nodemailer from "nodemailer";
-export const sendEmail = async (to, subject, html) => {
+export const sendEmail = async ({ email, subject, message }) => {
   const transporter = nodemailer.createTransport({
     host: "smtp.gmail.com",
     port: 587,
@@ -11,11 +11,11 @@ export const sendEmail = async (to, subject, html) => {
   });
   await transporter.sendMail({
     from: "finishersrepair@gmail.com",
-    to,
+    to: email,
     subject: subject
       ? subject
       : "Password change Link : change it by 10 minutes",
-    html,
+    html: message,
   });
 };
 

@@ -11,8 +11,7 @@ import {
   deleteUserByAdmin,
 } from "../controller/user.controller.js";
 import { isAdmin, protect } from "../middleware/auth.middleware.js";
-import upload from "../middleware/multer.middleware.js";
-import { createFCM } from "../controller/fcm.controller.js";
+import { upload } from "../middleware/multer.middleware.js";
 
 const router = express.Router();
 
@@ -42,9 +41,5 @@ router.patch(
   updateUserByAdmin
 );
 router.delete("/admin/list/:id", protect, isAdmin, deleteUserByAdmin);
-
-router.post("/update-fcm-token", protect,
-  createFCM
-);
 
 export default router;

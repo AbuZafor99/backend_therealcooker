@@ -4,11 +4,8 @@ import { v4 as uuidv4 } from "uuid";
 import { v2 as cloudinary } from "cloudinary";
 
 // Generate a random OTP
-export const generateOTP = () => {
-  const OTP_LENGTH = 6;
-  const otp = Array.from({ length: OTP_LENGTH }, () =>
-    crypto.randomInt(0, 9)
-  ).join("");
+export const generateOTP = (length = 6) => {
+  const otp = Array.from({ length }, () => crypto.randomInt(0, 9)).join("");
   return otp;
 };
 

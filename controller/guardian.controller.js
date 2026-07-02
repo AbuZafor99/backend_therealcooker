@@ -50,12 +50,14 @@ export const createGuardian = catchAsync(async (req, res) => {
     await GuardianAccount.insertMany(entries);
   }
 
-  // Populate guardian with accounts
-  const guardianWithAccounts = await Guardian.findById(guardian._id)
-    .populate({
-      path: "guardianAccounts",
-      populate: { path: "account" },
-    });
+  // Populate guardian with accounts via the junction collection
+  const linkedAccounts = await GuardianAccount.find({ guardian: guardian._id })
+    .populate("account");
+
+  const guardianWithAccounts = {
+    ...guardian.toObject(),
+    accounts: linkedAccounts.map((ga) => ga.account),
+  };
 
   sendResponse(res, {
     statusCode: httpStatus.CREATED,

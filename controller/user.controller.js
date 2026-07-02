@@ -4,8 +4,6 @@ import { uploadOnCloudinary } from "../utils/commonMethod.js";
 import AppError from "../errors/AppError.js";
 import sendResponse from "../utils/sendResponse.js";
 import catchAsync from "../utils/catchAsync.js";
-import { Checklist } from "../model/checklist.model.js";
-import { Report } from "../model/report.model.js";
 
 const parsePagination = (query) => {
   const page = Math.max(Number(query.page) || 1, 1);
@@ -271,19 +269,12 @@ export const getUserDetailsForAdmin = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, "User not found");
   }
 
-  const [checklists, reports] = await Promise.all([
-    Checklist.find({ user: id }).sort({ createdAt: -1 }).limit(31),
-    Report.find({ user: id }).sort({ createdAt: -1 }).limit(20),
-  ]);
-
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "User details fetched successfully",
     data: {
       user,
-      checklists,
-      reports,
     },
   });
 });
@@ -369,11 +360,7 @@ export const deleteUserByAdmin = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, "User not found");
   }
 
-  await Promise.all([
-    Checklist.deleteMany({ user: id }),
-    Report.deleteMany({ user: id }),
-    User.findByIdAndDelete(id),
-  ]);
+  await User.findByIdAndDelete(id);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
