@@ -7,6 +7,10 @@ const guardianSchema = new Schema(
       ref: "User",
       required: true,
     },
+    protectorUser: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+    },
     name: {
       type: String,
       required: true,
@@ -28,11 +32,27 @@ const guardianSchema = new Schema(
       type: Boolean,
       default: false,
     },
+    status: {
+      type: String,
+      enum: ["pending", "accepted"],
+      default: "pending",
+    },
+    requestedAccounts: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: "Account",
+      },
+    ],
+    respondedAt: {
+      type: Date,
+    },
   },
   { timestamps: true }
 );
 
 // Indexes
 guardianSchema.index({ user: 1 });
+guardianSchema.index({ protectorUser: 1 });
+guardianSchema.index({ user: 1, protectorUser: 1, status: 1 });
 
 export const Guardian = mongoose.model("Guardian", guardianSchema);

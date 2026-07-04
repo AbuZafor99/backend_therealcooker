@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import router from "./mainroute/index.js";
 import { createServer } from "http";
 import { Server } from "socket.io";
+import { notificationRoom, setSocketServer } from "./utils/socket.js";
 
 import globalErrorHandler from "./middleware/globalErrorHandler.js";
 import notFound from "./middleware/notFound.js";
@@ -25,6 +26,7 @@ export const io = new Server(server, {
     methods: ["GET", "POST"],
   },
 });
+setSocketServer(io);
 
 app.use(
   cors({
@@ -58,6 +60,13 @@ io.on("connection", (socket) => {
     if (userId) {
       socket.join(`chat_${userId}`);
       console.log(`Client ${socket.id} joined user room: ${userId}`);
+    }
+  });
+
+  socket.on("joinNotificationRoom", (userId) => {
+    if (userId) {
+      socket.join(notificationRoom(userId));
+      console.log(`Client ${socket.id} joined notification room: ${userId}`);
     }
   });
 

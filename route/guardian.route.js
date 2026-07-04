@@ -6,6 +6,8 @@ import {
   updateGuardian,
   deleteGuardian,
   updateGuardianAccounts,
+  acceptGuardianInvite,
+  rejectGuardianInvite,
 } from "../controller/guardian.controller.js";
 import { protect } from "../middleware/auth.middleware.js";
 
@@ -16,6 +18,9 @@ router.use(protect);
 router.route("/")
   .post(createGuardian)
   .get(getGuardians);
+
+router.post("/:id/accept", acceptGuardianInvite);
+router.post("/:id/reject", rejectGuardianInvite);
 
 router.route("/:id")
   .get(getGuardian)

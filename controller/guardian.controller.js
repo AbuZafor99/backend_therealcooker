@@ -6,6 +6,36 @@ import { Guardian } from "../model/guardian.model.js";
 import { Account } from "../model/account.model.js";
 import { GuardianAccount } from "../model/guardianAccount.model.js";
 import { User } from "../model/user.model.js";
+import { createAndEmitNotification } from "../utils/notification.js";
+
+const guardianInviteActions = (guardianId) => ({
+  accept: `/api/v1/guardians/${guardianId}/accept`,
+  reject: `/api/v1/guardians/${guardianId}/reject`,
+});
+
+const accountLabel = (accounts) => {
+  if (!accounts.length) return "your selected account";
+  return accounts
+    .map((account) => account.bankName || account.accountType)
+    .filter(Boolean)
+    .join(", ");
+};
+
+const buildGuardianPayload = async (guardian) => {
+  const guardianObject = guardian.toObject ? guardian.toObject() : guardian;
+  const linkedAccounts = await GuardianAccount.find({
+    guardian: guardianObject._id,
+  }).populate("account");
+  const requestedAccounts = await Account.find({
+    _id: { $in: guardianObject.requestedAccounts || [] },
+  });
+
+  return {
+    ...guardianObject,
+    accounts: linkedAccounts.map((ga) => ga.account),
+    requestedAccounts,
+  };
+};
 
 // Create guardian with selected accountIds
 export const createGuardian = catchAsync(async (req, res) => {
@@ -24,55 +54,82 @@ export const createGuardian = catchAsync(async (req, res) => {
     );
   }
 
-  // Create guardian
+  if (String(protectorUser._id) === String(req.user._id)) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "You cannot add yourself as a guardian"
+    );
+  }
+
+  const existingGuardian = await Guardian.findOne({
+    user: req.user._id,
+    protectorUser: protectorUser._id,
+    status: { $in: ["pending", "accepted"] },
+  });
+  if (existingGuardian) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Guardian invite already exists for this protector"
+    );
+  }
+
+  let accounts = [];
+  const requestedAccountIds = Array.isArray(accountIds) ? accountIds : [];
+  if (requestedAccountIds.length > 0) {
+    accounts = await Account.find({
+      _id: { $in: requestedAccountIds },
+      user: req.user._id,
+      isActive: true,
+    });
+    if (accounts.length !== requestedAccountIds.length) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "One or more accounts not found or don't belong to you"
+      );
+    }
+  }
+
+  // Create a pending invite. Account links are created only after acceptance.
   const guardian = await Guardian.create({
     user: req.user._id,
+    protectorUser: protectorUser._id,
     name,
     email,
     phone,
     relationship,
+    status: "pending",
+    requestedAccounts: accounts.map((account) => account._id),
   });
 
-  // Link accounts if provided
-  if (accountIds && Array.isArray(accountIds) && accountIds.length > 0) {
-    // Verify that all accountIds belong to this user and are not already linked to another guardian
-    const accounts = await Account.find({
-      _id: { $in: accountIds },
-      user: req.user._id,
-    });
-    if (accounts.length !== accountIds.length) {
-      throw new AppError(httpStatus.BAD_REQUEST, "One or more accounts not found or don't belong to you");
-    }
+  const requesterName = req.user.name || req.user.email;
+  await createAndEmitNotification({
+    recipient: protectorUser._id,
+    sender: req.user._id,
+    type: "guardian_invite",
+    title: "Guardian invite",
+    body: `${requesterName} invited you to protect ${accountLabel(accounts)}.`,
+    data: {
+      guardianId: guardian._id,
+      requester: {
+        id: req.user._id,
+        name: req.user.name,
+        email: req.user.email,
+      },
+      accounts: accounts.map((account) => ({
+        id: account._id,
+        accountType: account.accountType,
+        bankName: account.bankName,
+      })),
+      actions: guardianInviteActions(guardian._id),
+    },
+  });
 
-    // Check if any of these accounts are already linked to another guardian
-    const linked = await GuardianAccount.find({ account: { $in: accountIds } });
-    if (linked.length > 0) {
-      // Option: either throw error or allow re-assignment (we'll remove old links)
-      // For simplicity, we'll remove old links and assign to new guardian
-      await GuardianAccount.deleteMany({ account: { $in: accountIds } });
-    }
-
-    // Create junction entries
-    const entries = accountIds.map((accountId) => ({
-      guardian: guardian._id,
-      account: accountId,
-    }));
-    await GuardianAccount.insertMany(entries);
-  }
-
-  // Populate guardian with accounts via the junction collection
-  const linkedAccounts = await GuardianAccount.find({ guardian: guardian._id })
-    .populate("account");
-
-  const guardianWithAccounts = {
-    ...guardian.toObject(),
-    accounts: linkedAccounts.map((ga) => ga.account),
-  };
+  const guardianWithAccounts = await buildGuardianPayload(guardian);
 
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
     success: true,
-    message: "Guardian created and accounts linked successfully",
+    message: "Guardian invite sent successfully",
     data: guardianWithAccounts,
   });
 });
@@ -81,16 +138,8 @@ export const createGuardian = catchAsync(async (req, res) => {
 export const getGuardians = catchAsync(async (req, res) => {
   const guardians = await Guardian.find({ user: req.user._id });
 
-  // Populate accounts via junction
   const result = await Promise.all(
-    guardians.map(async (g) => {
-      const accounts = await GuardianAccount.find({ guardian: g._id })
-        .populate("account");
-      return {
-        ...g.toObject(),
-        accounts: accounts.map(ga => ga.account),
-      };
-    })
+    guardians.map((guardian) => buildGuardianPayload(guardian))
   );
 
   sendResponse(res, {
@@ -109,13 +158,7 @@ export const getGuardian = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, "Guardian not found");
   }
 
-  const accounts = await GuardianAccount.find({ guardian: guardian._id })
-    .populate("account");
-
-  const result = {
-    ...guardian.toObject(),
-    accounts: accounts.map(ga => ga.account),
-  };
+  const result = await buildGuardianPayload(guardian);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -194,6 +237,20 @@ export const updateGuardianAccounts = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.BAD_REQUEST, "One or more accounts not found");
   }
 
+  if (guardian.status === "pending") {
+    guardian.requestedAccounts = accountIds;
+    await guardian.save();
+
+    const updated = await buildGuardianPayload(guardian);
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Pending guardian invite accounts updated successfully",
+      data: updated,
+    });
+    return;
+  }
+
   // Remove existing links for this guardian
   await GuardianAccount.deleteMany({ guardian: guardian._id });
 
@@ -221,5 +278,129 @@ export const updateGuardianAccounts = catchAsync(async (req, res) => {
     success: true,
     message: "Guardian accounts updated successfully",
     data: result,
+  });
+});
+
+export const acceptGuardianInvite = catchAsync(async (req, res) => {
+  const { id } = req.params;
+
+  const guardian = await Guardian.findOne({
+    _id: id,
+    protectorUser: req.user._id,
+    status: "pending",
+  }).populate("user", "name email");
+
+  if (!guardian) {
+    throw new AppError(httpStatus.NOT_FOUND, "Pending guardian invite not found");
+  }
+
+  const accountIds = guardian.requestedAccounts || [];
+  const accounts = await Account.find({
+    _id: { $in: accountIds },
+    user: guardian.user._id,
+    isActive: true,
+  });
+
+  if (accounts.length !== accountIds.length) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "One or more requested accounts are no longer available"
+    );
+  }
+
+  if (accountIds.length > 0) {
+    await GuardianAccount.deleteMany({ account: { $in: accountIds } });
+    await GuardianAccount.insertMany(
+      accountIds.map((accountId) => ({
+        guardian: guardian._id,
+        account: accountId,
+      }))
+    );
+  }
+
+  guardian.status = "accepted";
+  guardian.respondedAt = new Date();
+  await guardian.save();
+
+  const protectorName = req.user.name || req.user.email;
+  await createAndEmitNotification({
+    recipient: guardian.user._id,
+    sender: req.user._id,
+    type: "guardian_invite_accepted",
+    title: "Guardian invite accepted",
+    body: `${protectorName} accepted your guardian invite.`,
+    data: {
+      guardianId: guardian._id,
+      protector: {
+        id: req.user._id,
+        name: req.user.name,
+        email: req.user.email,
+      },
+      accounts: accounts.map((account) => ({
+        id: account._id,
+        accountType: account.accountType,
+        bankName: account.bankName,
+      })),
+    },
+  });
+
+  const updatedGuardian = await Guardian.findById(guardian._id);
+  const result = await buildGuardianPayload(updatedGuardian);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Guardian invite accepted successfully",
+    data: result,
+  });
+});
+
+export const rejectGuardianInvite = catchAsync(async (req, res) => {
+  const { id } = req.params;
+
+  const guardian = await Guardian.findOne({
+    _id: id,
+    protectorUser: req.user._id,
+    status: "pending",
+  }).populate("user", "name email");
+
+  if (!guardian) {
+    throw new AppError(httpStatus.NOT_FOUND, "Pending guardian invite not found");
+  }
+
+  const accounts = await Account.find({
+    _id: { $in: guardian.requestedAccounts || [] },
+  });
+  const requesterId = guardian.user._id;
+  const protectorName = req.user.name || req.user.email;
+
+  await guardian.deleteOne();
+
+  await createAndEmitNotification({
+    recipient: requesterId,
+    sender: req.user._id,
+    type: "guardian_invite_rejected",
+    title: "Guardian invite rejected",
+    body: `${protectorName} rejected your guardian invite.`,
+    data: {
+      guardianId: id,
+      protector: {
+        id: req.user._id,
+        name: req.user.name,
+        email: req.user.email,
+      },
+      accounts: accounts.map((account) => ({
+        id: account._id,
+        accountType: account.accountType,
+        bankName: account.bankName,
+      })),
+    },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Guardian invite rejected successfully",
+    data: null,
   });
 });
