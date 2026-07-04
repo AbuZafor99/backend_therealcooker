@@ -23,6 +23,22 @@ const accountSchema = new Schema(
       required: true,
       trim: true,
     },
+    simulatedTransferLimit: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    isLocked: {
+      type: Boolean,
+      default: false,
+    },
+    lockedReason: {
+      type: String,
+      default: "",
+    },
+    lockedAt: {
+      type: Date,
+    },
     isActive: {
       type: Boolean,
       default: true,

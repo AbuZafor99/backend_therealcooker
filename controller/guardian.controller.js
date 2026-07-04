@@ -1,12 +1,12 @@
-import AppError from "../errors/AppError.js";
-import catchAsync from "../utils/catchAsync.js";
 import httpStatus from "http-status";
-import sendResponse from "../utils/sendResponse.js";
-import { Guardian } from "../model/guardian.model.js";
+import AppError from "../errors/AppError.js";
 import { Account } from "../model/account.model.js";
+import { Guardian } from "../model/guardian.model.js";
 import { GuardianAccount } from "../model/guardianAccount.model.js";
 import { User } from "../model/user.model.js";
+import catchAsync from "../utils/catchAsync.js";
 import { createAndEmitNotification } from "../utils/notification.js";
+import sendResponse from "../utils/sendResponse.js";
 
 const guardianInviteActions = (guardianId) => ({
   accept: `/api/v1/guardians/${guardianId}/accept`,
@@ -102,12 +102,13 @@ export const createGuardian = catchAsync(async (req, res) => {
   });
 
   const requesterName = req.user.name || req.user.email;
+  const accountStr = accountLabel(accounts);
   await createAndEmitNotification({
     recipient: protectorUser._id,
     sender: req.user._id,
     type: "guardian_invite",
     title: "Guardian invite",
-    body: `${requesterName} invited you to protect ${accountLabel(accounts)}.`,
+    body: `${requesterName} invited you as a guardian for ${accountStr === "your selected account" ? "their account" : accountStr}.`,
     data: {
       guardianId: guardian._id,
       requester: {
