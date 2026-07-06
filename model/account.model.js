@@ -18,6 +18,11 @@ const accountSchema = new Schema(
         return this.accountType === "bank";
       },
     },
+    nickname: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     accountNumberEncrypted: {
       type: String,
       required: true,

@@ -37,6 +37,79 @@ const buildGuardianPayload = async (guardian) => {
   };
 };
 
+// A protector is represented by ONE guardian record per requester, but can
+// protect many of the requester's accounts. When the same protector is linked
+// to additional accounts, merge those accounts into the existing record instead
+// of creating a duplicate (or wrongly rejecting the request).
+const mergeAccountsIntoGuardian = async (guardian, accounts, requester) => {
+  let newAccounts = [];
+
+  if (guardian.status === "pending") {
+    // Union the newly requested accounts into the pending invite (dedup by id).
+    const existingIds = new Set(
+      (guardian.requestedAccounts || []).map((id) => String(id))
+    );
+    newAccounts = accounts.filter(
+      (account) => !existingIds.has(String(account._id))
+    );
+    if (newAccounts.length > 0) {
+      guardian.requestedAccounts = [
+        ...(guardian.requestedAccounts || []),
+        ...newAccounts.map((account) => account._id),
+      ];
+      await guardian.save();
+    }
+  } else {
+    // Accepted: the protector already trusts this requester, so link the new
+    // accounts directly (same behaviour as updateGuardianAccounts). The
+    // composite unique index on GuardianAccount guards against duplicates.
+    const existingLinks = await GuardianAccount.find({ guardian: guardian._id });
+    const linkedIds = new Set(existingLinks.map((link) => String(link.account)));
+    newAccounts = accounts.filter(
+      (account) => !linkedIds.has(String(account._id))
+    );
+    if (newAccounts.length > 0) {
+      await GuardianAccount.insertMany(
+        newAccounts.map((account) => ({
+          guardian: guardian._id,
+          account: account._id,
+        }))
+      );
+    }
+  }
+
+  if (newAccounts.length > 0 && guardian.protectorUser) {
+    const requesterName = requester.name || requester.email;
+    const accountStr = accountLabel(newAccounts);
+    await createAndEmitNotification({
+      recipient: guardian.protectorUser,
+      sender: requester._id,
+      type: "guardian_invite",
+      title: "Guardian accounts updated",
+      body: `${requesterName} added you as a guardian for ${accountStr}.`,
+      data: {
+        guardianId: guardian._id,
+        requester: {
+          id: requester._id,
+          name: requester.name,
+          email: requester.email,
+        },
+        accounts: newAccounts.map((account) => ({
+          id: account._id,
+          accountType: account.accountType,
+          bankName: account.bankName,
+        })),
+        actions: guardianInviteActions(guardian._id),
+      },
+    });
+  }
+
+  return {
+    addedCount: newAccounts.length,
+    payload: await buildGuardianPayload(guardian),
+  };
+};
+
 // Create guardian with selected accountIds
 export const createGuardian = catchAsync(async (req, res) => {
   const { name, email, phone, relationship, accountIds } = req.body;
@@ -61,18 +134,8 @@ export const createGuardian = catchAsync(async (req, res) => {
     );
   }
 
-  const existingGuardian = await Guardian.findOne({
-    user: req.user._id,
-    protectorUser: protectorUser._id,
-    status: { $in: ["pending", "accepted"] },
-  });
-  if (existingGuardian) {
-    throw new AppError(
-      httpStatus.BAD_REQUEST,
-      "Guardian invite already exists for this protector"
-    );
-  }
-
+  // Resolve and validate the requested accounts up-front so we can either merge
+  // them into an existing guardian or attach them to a brand-new invite.
   let accounts = [];
   const requestedAccountIds = Array.isArray(accountIds) ? accountIds : [];
   if (requestedAccountIds.length > 0) {
@@ -87,6 +150,35 @@ export const createGuardian = catchAsync(async (req, res) => {
         "One or more accounts not found or don't belong to you"
       );
     }
+  }
+
+  // A protector can guard many of your accounts. If this protector is already
+  // linked to you, merge the newly selected accounts into that record instead
+  // of rejecting the request. Adding the same person to the same account twice
+  // is a no-op (deduped here and by the GuardianAccount unique index).
+  const existingGuardian = await Guardian.findOne({
+    user: req.user._id,
+    protectorUser: protectorUser._id,
+    status: { $in: ["pending", "accepted"] },
+  });
+  if (existingGuardian) {
+    const { addedCount, payload } = await mergeAccountsIntoGuardian(
+      existingGuardian,
+      accounts,
+      req.user
+    );
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message:
+        addedCount > 0
+          ? "Guardian updated with the selected account(s)"
+          : "This guardian already protects the selected account(s)",
+      // alreadyLinked lets the client show a "already a guardian for this
+      // account" notice instead of the success/confirm flow.
+      data: { ...payload, addedCount, alreadyLinked: addedCount === 0 },
+    });
+    return;
   }
 
   // Create a pending invite. Account links are created only after acceptance.
@@ -310,7 +402,13 @@ export const acceptGuardianInvite = catchAsync(async (req, res) => {
   }
 
   if (accountIds.length > 0) {
-    await GuardianAccount.deleteMany({ account: { $in: accountIds } });
+    // Only clear THIS guardian's stale links for these accounts. Scoping by
+    // guardian keeps other guardians that protect the same accounts intact
+    // (an account may have several guardians).
+    await GuardianAccount.deleteMany({
+      guardian: guardian._id,
+      account: { $in: accountIds },
+    });
     await GuardianAccount.insertMany(
       accountIds.map((accountId) => ({
         guardian: guardian._id,

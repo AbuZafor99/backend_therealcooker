@@ -122,7 +122,7 @@ const lockLimitRequest = async (limitRequest, reason) => {
 
 // Create an account (no guardian relation yet)
 export const createAccount = catchAsync(async (req, res) => {
-  const { accountType, bankName, accountNumberEncrypted } = req.body;
+  const { accountType, bankName, nickname, accountNumberEncrypted } = req.body;
 
   if (!accountType || !accountNumberEncrypted) {
     throw new AppError(httpStatus.BAD_REQUEST, "Missing required fields");
@@ -135,6 +135,7 @@ export const createAccount = catchAsync(async (req, res) => {
     user: req.user._id,
     accountType,
     bankName,
+    nickname: nickname?.trim() || "",
     accountNumberEncrypted,
   });
 
@@ -195,7 +196,8 @@ export const getAccount = catchAsync(async (req, res) => {
 // Update account (only certain fields)
 export const updateAccount = catchAsync(async (req, res) => {
   const { id } = req.params;
-  const { accountType, bankName, accountNumberEncrypted, isActive } = req.body;
+  const { accountType, bankName, nickname, accountNumberEncrypted, isActive } =
+    req.body;
 
   const account = await Account.findOne({ _id: id, user: req.user._id });
   if (!account) {
@@ -204,6 +206,7 @@ export const updateAccount = catchAsync(async (req, res) => {
 
   if (accountType) account.accountType = accountType;
   if (bankName) account.bankName = bankName;
+  if (nickname !== undefined) account.nickname = nickname?.trim() || "";
   if (accountNumberEncrypted) account.accountNumberEncrypted = accountNumberEncrypted;
   if (isActive !== undefined) account.isActive = isActive;
 
@@ -376,15 +379,37 @@ export const simulateLimitIncrease = catchAsync(async (req, res) => {
 export const sendLimitIncreaseOtp = catchAsync(async (req, res) => {
   const { id, requestId } = req.params;
 
-  const limitRequest = await LimitIncreaseRequest.findOne({
+  // A request is "active" while it still needs OTP verification. Accept both
+  // "notified" (guardian hasn't sent the OTP yet) and "otp_sent" (guardian is
+  // re-sending) so the button keeps working across attempts and re-taps.
+  const ACTIVE_STATUSES = ["notified", "otp_sent"];
+
+  // Prefer the exact request the guardian acted on. If that alert has been
+  // superseded by a newer attempt (a very common case from the 2nd attempt
+  // onward), fall back to the latest still-active request for this account so
+  // the guardian can always trigger the OTP instead of hitting a dead button.
+  let limitRequest = await LimitIncreaseRequest.findOne({
     _id: requestId,
     account: id,
     guardianUser: req.user._id,
-    status: "notified",
+    status: { $in: ACTIVE_STATUSES },
   }).populate("account user guardian");
 
   if (!limitRequest) {
-    throw new AppError(httpStatus.NOT_FOUND, "Pending limit request not found");
+    limitRequest = await LimitIncreaseRequest.findOne({
+      account: id,
+      guardianUser: req.user._id,
+      status: { $in: ACTIVE_STATUSES },
+    })
+      .sort({ createdAt: -1 })
+      .populate("account user guardian");
+  }
+
+  if (!limitRequest) {
+    throw new AppError(
+      httpStatus.NOT_FOUND,
+      "No active limit request to verify for this account"
+    );
   }
 
   if (limitRequest.attemptNumber < 2) {
