@@ -23,6 +23,11 @@ const accountSchema = new Schema(
       trim: true,
       default: "",
     },
+    imageUrl: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     accountNumberEncrypted: {
       type: String,
       required: true,

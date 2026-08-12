@@ -15,7 +15,11 @@ export const getRecentActivities = catchAsync(async (req, res) => {
     let type = "notification";
     if (n.type?.includes("guardian")) type = "guardian";
     else if (n.type?.includes("limit")) type = "limit";
-    else if (n.type?.includes("account_locked")) type = "alert";
+    else if (
+      n.type?.includes("account_locked") ||
+      n.type?.includes("sos_emergency")
+    )
+      type = "alert";
 
     return {
       id: n._id,

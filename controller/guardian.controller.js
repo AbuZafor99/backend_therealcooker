@@ -110,9 +110,9 @@ const mergeAccountsIntoGuardian = async (guardian, accounts, requester) => {
   };
 };
 
-// Create guardian with selected accountIds
+// Create guardian. Guardians protect all of the requester's accounts.
 export const createGuardian = catchAsync(async (req, res) => {
-  const { name, email, phone, relationship, accountIds } = req.body;
+  const { name, email, phone, relationship, isPrimary } = req.body;
 
   if (!name || !email || !phone) {
     throw new AppError(httpStatus.BAD_REQUEST, "Missing required fields");
@@ -134,23 +134,31 @@ export const createGuardian = catchAsync(async (req, res) => {
     );
   }
 
-  // Resolve and validate the requested accounts up-front so we can either merge
-  // them into an existing guardian or attach them to a brand-new invite.
-  let accounts = [];
-  const requestedAccountIds = Array.isArray(accountIds) ? accountIds : [];
-  if (requestedAccountIds.length > 0) {
-    accounts = await Account.find({
-      _id: { $in: requestedAccountIds },
-      user: req.user._id,
-      isActive: true,
-    });
-    if (accounts.length !== requestedAccountIds.length) {
-      throw new AppError(
-        httpStatus.BAD_REQUEST,
-        "One or more accounts not found or don't belong to you"
-      );
-    }
+  const existingGuardians = await Guardian.find({
+    user: req.user._id,
+    status: { $in: ["pending", "accepted"] },
+  });
+  const shouldBePrimary = existingGuardians.length === 0 || isPrimary === true;
+  const secondaryCount = existingGuardians.filter(
+    (guardian) => !guardian.isPrimary
+  ).length;
+  if (existingGuardians.length >= 4) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "You can have 1 primary and up to 3 secondary guardians"
+    );
   }
+  if (!shouldBePrimary && secondaryCount >= 3) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "You can add up to 3 secondary guardians"
+    );
+  }
+
+  const accounts = await Account.find({
+    user: req.user._id,
+    isActive: true,
+  });
 
   // A protector can guard many of your accounts. If this protector is already
   // linked to you, merge the newly selected accounts into that record instead
@@ -162,6 +170,14 @@ export const createGuardian = catchAsync(async (req, res) => {
     status: { $in: ["pending", "accepted"] },
   });
   if (existingGuardian) {
+    if (shouldBePrimary) {
+      await Guardian.updateMany(
+        { user: req.user._id, _id: { $ne: existingGuardian._id } },
+        { isPrimary: false }
+      );
+      existingGuardian.isPrimary = true;
+      await existingGuardian.save();
+    }
     const { addedCount, payload } = await mergeAccountsIntoGuardian(
       existingGuardian,
       accounts,
@@ -181,6 +197,10 @@ export const createGuardian = catchAsync(async (req, res) => {
     return;
   }
 
+  if (shouldBePrimary) {
+    await Guardian.updateMany({ user: req.user._id }, { isPrimary: false });
+  }
+
   // Create a pending invite. Account links are created only after acceptance.
   const guardian = await Guardian.create({
     user: req.user._id,
@@ -189,6 +209,7 @@ export const createGuardian = catchAsync(async (req, res) => {
     email,
     phone,
     relationship,
+    isPrimary: shouldBePrimary,
     status: "pending",
     requestedAccounts: accounts.map((account) => account._id),
   });
@@ -387,19 +408,11 @@ export const acceptGuardianInvite = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, "Pending guardian invite not found");
   }
 
-  const accountIds = guardian.requestedAccounts || [];
   const accounts = await Account.find({
-    _id: { $in: accountIds },
     user: guardian.user._id,
     isActive: true,
   });
-
-  if (accounts.length !== accountIds.length) {
-    throw new AppError(
-      httpStatus.BAD_REQUEST,
-      "One or more requested accounts are no longer available"
-    );
-  }
+  const accountIds = accounts.map((account) => account._id);
 
   if (accountIds.length > 0) {
     // Only clear THIS guardian's stale links for these accounts. Scoping by
@@ -418,6 +431,7 @@ export const acceptGuardianInvite = catchAsync(async (req, res) => {
   }
 
   guardian.status = "accepted";
+  guardian.requestedAccounts = accountIds;
   guardian.respondedAt = new Date();
   await guardian.save();
 

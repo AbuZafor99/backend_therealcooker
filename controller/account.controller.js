@@ -4,6 +4,8 @@ import crypto from "crypto";
 import httpStatus from "http-status";
 import sendResponse from "../utils/sendResponse.js";
 import { Account } from "../model/account.model.js";
+import { AccountDeletionRequest } from "../model/accountDeletionRequest.model.js";
+import { EmergencySession } from "../model/emergencySession.model.js";
 import { Guardian } from "../model/guardian.model.js";
 import { GuardianAccount } from "../model/guardianAccount.model.js";
 import { LimitIncreaseRequest } from "../model/limitIncreaseRequest.model.js";
@@ -14,7 +16,12 @@ import { sendEmail } from "../utils/sendEmail.js";
 import { emitToUser } from "../utils/socket.js";
 
 const hashOtp = (otp) => crypto.createHash("sha256").update(otp).digest("hex");
-const OTP_WINDOW_MS = 5 * 60 * 1000;
+const OTP_WINDOW_MS = 90 * 1000;
+
+const uploadedFileUrl = (req) => {
+  if (!req.file) return "";
+  return `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
+};
 
 const parseLimit = (value, fieldName) => {
   const parsed = Number(value);
@@ -28,8 +35,11 @@ const parseLimit = (value, fieldName) => {
 };
 
 const getAcceptedGuardianForAccount = async (accountId) => {
-  const guardianAccount = await GuardianAccount.findOne({ account: accountId })
+  const guardianAccounts = await GuardianAccount.find({ account: accountId })
     .populate("guardian");
+  const guardianAccount = guardianAccounts.find(
+    (link) => link.guardian?.isPrimary
+  );
 
   if (!guardianAccount?.guardian) return null;
 
@@ -57,7 +67,215 @@ const accountSummary = (account) => ({
   id: account._id,
   accountType: account.accountType,
   bankName: account.bankName,
+  nickname: account.nickname,
+  imageUrl: account.imageUrl,
 });
+
+const parseEmergencyLocation = (value) => {
+  if (!value || typeof value !== "object") return null;
+  const latitude = Number(value.latitude);
+  const longitude = Number(value.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  return { latitude, longitude };
+};
+
+const emergencySessionPayload = (session) => ({
+  id: session?._id,
+  active: session?.status === "active",
+  eventLocation: session?.eventLocation || null,
+  lastKnownLocation: session?.lastKnownLocation || null,
+  lockedAccountIds: (session?.lockedAccounts || []).map((id) => id.toString()),
+  activatedAt: session?.activatedAt || null,
+  resolvedAt: session?.resolvedAt || null,
+  clearedByRole: session?.clearedByRole || "",
+});
+
+const findActiveEmergencySession = (userId) =>
+  EmergencySession.findOne({ user: userId, status: "active" }).sort({
+    createdAt: -1,
+  });
+
+const resolveProtectorUser = async (guardian) => {
+  let protectorUser = null;
+  if (guardian.protectorUser) {
+    protectorUser = await User.findById(guardian.protectorUser);
+  }
+  if (!protectorUser && guardian.email) {
+    protectorUser = await User.findOne({ email: guardian.email });
+  }
+  return protectorUser;
+};
+
+const findAcceptedGuardianUsers = async (userId) => {
+  const acceptedGuardians = await Guardian.find({
+    user: userId,
+    status: "accepted",
+  });
+  const guardianUsers = [];
+  for (const guardian of acceptedGuardians) {
+    const protectorUser = await resolveProtectorUser(guardian);
+    if (protectorUser) {
+      guardianUsers.push({ guardian, protectorUser });
+    }
+  }
+  return guardianUsers;
+};
+
+const findPrimaryGuardianOverride = async (ownerId, guardianUser) => {
+  return Guardian.findOne({
+    user: ownerId,
+    isPrimary: true,
+    status: "accepted",
+    $or: [
+      { protectorUser: guardianUser._id },
+      ...(guardianUser.email ? [{ email: guardianUser.email }] : []),
+    ],
+  });
+};
+
+const findPrimaryGuardianForUser = async (userId) => {
+  const guardian = await Guardian.findOne({
+    user: userId,
+    isPrimary: true,
+    status: "accepted",
+  });
+  if (!guardian) return null;
+
+  let protectorUser = null;
+  if (guardian.protectorUser) {
+    protectorUser = await User.findById(guardian.protectorUser);
+  }
+  if (!protectorUser && guardian.email) {
+    protectorUser = await User.findOne({ email: guardian.email });
+  }
+
+  if (!protectorUser) return null;
+  return { guardian, protectorUser };
+};
+
+const deleteAccountWithLinks = async (account) => {
+  await GuardianAccount.deleteMany({ account: account._id });
+  await account.deleteOne();
+};
+
+const sendEmergencyResolvedNotifications = async ({
+  session,
+  clearedByUser,
+  clearedByRole,
+  guardianUsers = null,
+}) => {
+  const owner = await User.findById(session.user);
+  const resolvedPayload = {
+    ...emergencySessionPayload(session),
+    clearedBy: {
+      role: clearedByRole,
+      id: clearedByUser._id,
+      name: clearedByUser.name,
+      email: clearedByUser.email,
+    },
+    user: owner
+      ? {
+          id: owner._id,
+          name: owner.name,
+          email: owner.email,
+        }
+      : null,
+  };
+  const protectors = guardianUsers || (await findAcceptedGuardianUsers(session.user));
+
+  await Promise.all([
+    createAndEmitNotification({
+      recipient: session.user,
+      sender: clearedByUser._id,
+      type: "sos_emergency_resolved",
+      title: "Emergency mode ended",
+      body:
+        clearedByRole === "primary_guardian"
+          ? "Your primary guardian marked you safe."
+          : "You marked yourself safe.",
+      data: resolvedPayload,
+    }),
+    ...protectors.map(({ guardian, protectorUser }) =>
+      createAndEmitNotification({
+        recipient: protectorUser._id,
+        sender: clearedByUser._id,
+        type: "sos_emergency_resolved",
+        title: "Emergency mode ended",
+        body: `${userLabel(owner)}'s emergency mode was ended.`,
+        data: {
+          ...resolvedPayload,
+          guardianRole: guardian.isPrimary ? "primary" : "secondary",
+        },
+      })
+    ),
+  ]);
+
+  emitToUser(session.user, "emergency:resolved", resolvedPayload);
+  protectors.forEach(({ protectorUser }) =>
+    emitToUser(protectorUser._id, "emergency:resolved", resolvedPayload)
+  );
+
+  return resolvedPayload;
+};
+
+const resolveEmergencySession = async ({
+  session,
+  clearedByUser,
+  clearedByRole,
+  clearedByGuardian = null,
+}) => {
+  const clearedAt = new Date();
+  session.status = "resolved";
+  session.resolvedAt = clearedAt;
+  session.clearedByRole = clearedByRole;
+  session.clearedByUser = clearedByUser._id;
+  if (clearedByGuardian) {
+    session.clearedByGuardian = clearedByGuardian._id;
+  }
+  session.clearanceHistory.push({
+    role: clearedByRole,
+    clearedByUser: clearedByUser._id,
+    ...(clearedByGuardian ? { clearedByGuardian: clearedByGuardian._id } : {}),
+    clearedAt,
+  });
+  session.userClearOtpHash = "";
+  session.userClearOtpExpiresAt = undefined;
+  await session.save();
+  return session;
+};
+
+const sendEmergencyClearOtp = async ({ session, user }) => {
+  const otp = generateOTP(6);
+  session.userClearOtpHash = hashOtp(otp);
+  session.userClearOtpExpiresAt = new Date(Date.now() + OTP_WINDOW_MS);
+  session.userClearOtpSentAt = new Date();
+  await session.save();
+
+  await Promise.all([
+    createAndEmitNotification({
+      recipient: user._id,
+      sender: user._id,
+      type: "sos_emergency_clear_otp",
+      title: "Emergency clear OTP",
+      body: `Your emergency clear OTP is: ${otp}`,
+      data: {
+        emergencySessionId: session._id,
+        expiresAt: session.userClearOtpExpiresAt,
+        ...(process.env.NODE_ENV !== "production" ? { debugOtp: otp } : {}),
+      },
+    }),
+    sendEmail({
+      email: user.email,
+      subject: "Emergency clear OTP",
+      message: `Your emergency clear OTP is: ${otp}`,
+    }).catch(() => null),
+  ]);
+
+  return {
+    expiresAt: session.userClearOtpExpiresAt,
+    ...(process.env.NODE_ENV !== "production" ? { debugOtp: otp } : {}),
+  };
+};
 
 const trySendPushNotification = async (userIds, title, body) => {
   try {
@@ -88,12 +306,31 @@ const lockLimitRequest = async (limitRequest, reason) => {
     requestId: limitRequest._id,
     account: accountSummary(account),
     reason,
+    lastKnownLocation: owner.location || null,
     user: {
       id: owner._id,
       name: owner.name,
       email: owner.email,
     },
   };
+
+  const acceptedGuardians = await Guardian.find({
+    user: owner._id,
+    status: "accepted",
+  });
+  const guardianUsers = [];
+  for (const guardian of acceptedGuardians) {
+    let protectorUser = null;
+    if (guardian.protectorUser) {
+      protectorUser = await User.findById(guardian.protectorUser);
+    }
+    if (!protectorUser && guardian.email) {
+      protectorUser = await User.findOne({ email: guardian.email });
+    }
+    if (protectorUser) {
+      guardianUsers.push({ guardian, protectorUser });
+    }
+  }
 
   await Promise.all([
     createAndEmitNotification({
@@ -104,18 +341,25 @@ const lockLimitRequest = async (limitRequest, reason) => {
       body: "Your account was locked after transfer limit verification failed.",
       data: lockPayload,
     }),
-    createAndEmitNotification({
-      recipient: guardianUser._id,
-      sender: owner._id,
-      type: "account_locked",
-      title: "Protected account locked",
-      body: `${userLabel(owner)}'s account is locked.`,
-      data: lockPayload,
-    }),
+    ...guardianUsers.map(({ guardian, protectorUser }) =>
+      createAndEmitNotification({
+        recipient: protectorUser._id,
+        sender: owner._id,
+        type: "account_locked",
+        title: "Emergency alert",
+        body: `${userLabel(owner)}'s account is locked.`,
+        data: {
+          ...lockPayload,
+          guardianRole: guardian.isPrimary ? "primary" : "secondary",
+        },
+      })
+    ),
   ]);
 
   emitToUser(owner._id, "account:locked", lockPayload);
-  emitToUser(guardianUser._id, "account:locked", lockPayload);
+  guardianUsers.forEach(({ protectorUser }) =>
+    emitToUser(protectorUser._id, "account:locked", lockPayload)
+  );
 
   return lockPayload;
 };
@@ -137,7 +381,43 @@ export const createAccount = catchAsync(async (req, res) => {
     bankName,
     nickname: nickname?.trim() || "",
     accountNumberEncrypted,
+    imageUrl: uploadedFileUrl(req),
   });
+
+  const guardians = await Guardian.find({
+    user: req.user._id,
+    status: { $in: ["pending", "accepted"] },
+  });
+  const acceptedGuardians = guardians.filter(
+    (guardian) => guardian.status === "accepted"
+  );
+  if (acceptedGuardians.length > 0) {
+    await GuardianAccount.insertMany(
+      acceptedGuardians.map((guardian) => ({
+        guardian: guardian._id,
+        account: account._id,
+      })),
+      { ordered: false }
+    ).catch(() => {});
+  }
+
+  const pendingGuardians = guardians.filter(
+    (guardian) => guardian.status === "pending"
+  );
+  await Promise.all(
+    pendingGuardians.map(async (guardian) => {
+      const requestedIds = new Set(
+        (guardian.requestedAccounts || []).map((id) => String(id))
+      );
+      if (!requestedIds.has(String(account._id))) {
+        guardian.requestedAccounts = [
+          ...(guardian.requestedAccounts || []),
+          account._id,
+        ];
+        await guardian.save();
+      }
+    })
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
@@ -168,6 +448,224 @@ export const getAccounts = catchAsync(async (req, res) => {
     success: true,
     message: "Accounts fetched successfully",
     data: accountsWithGuardian,
+  });
+});
+
+export const getEmergencyStatus = catchAsync(async (req, res) => {
+  const session = await findActiveEmergencySession(req.user._id);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Emergency status fetched successfully",
+    data: session
+      ? emergencySessionPayload(session)
+      : {
+          active: false,
+          eventLocation: null,
+          lastKnownLocation: null,
+          lockedAccountIds: [],
+          activatedAt: null,
+        },
+  });
+});
+
+export const activateEmergencyMode = catchAsync(async (req, res) => {
+  const existingSession = await findActiveEmergencySession(req.user._id);
+  if (existingSession) {
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Emergency mode is already active",
+      data: emergencySessionPayload(existingSession),
+    });
+    return;
+  }
+
+  const eventLocation = parseEmergencyLocation(req.body?.eventLocation);
+  const lastKnownLocation = parseEmergencyLocation(req.body?.lastKnownLocation);
+  const activeAccounts = await Account.find({
+    user: req.user._id,
+    isActive: true,
+  });
+
+  const lockedAt = new Date();
+  await Account.updateMany(
+    { _id: { $in: activeAccounts.map((account) => account._id) } },
+    {
+      $set: {
+        isLocked: true,
+        lockedReason: "SOS emergency mode activated",
+        lockedAt,
+      },
+    }
+  );
+
+  const session = await EmergencySession.create({
+    user: req.user._id,
+    status: "active",
+    eventLocation,
+    lastKnownLocation: lastKnownLocation || eventLocation,
+    lockedAccounts: activeAccounts.map((account) => account._id),
+    activatedAt: lockedAt,
+  });
+
+  const payload = {
+    ...emergencySessionPayload(session),
+    user: {
+      id: req.user._id,
+      name: req.user.name,
+      email: req.user.email,
+    },
+    accounts: activeAccounts.map(accountSummary),
+  };
+
+  const acceptedGuardians = await Guardian.find({
+    user: req.user._id,
+    status: "accepted",
+  });
+  const guardianUsers = [];
+  for (const guardian of acceptedGuardians) {
+    const protectorUser = await resolveProtectorUser(guardian);
+    if (protectorUser) {
+      guardianUsers.push({ guardian, protectorUser });
+    }
+  }
+
+  await Promise.all([
+    createAndEmitNotification({
+      recipient: req.user._id,
+      sender: req.user._id,
+      type: "sos_emergency_active",
+      title: "Emergency mode active",
+      body: "Emergency instructions were sent to your guardians and banks.",
+      data: payload,
+    }),
+    ...guardianUsers.map(({ guardian, protectorUser }) =>
+      createAndEmitNotification({
+        recipient: protectorUser._id,
+        sender: req.user._id,
+        type: "sos_emergency_active",
+        title: "Emergency alert",
+        body: `${userLabel(req.user)} activated SOS emergency mode.`,
+        data: {
+          ...payload,
+          guardianRole: guardian.isPrimary ? "primary" : "secondary",
+        },
+      })
+    ),
+  ]);
+
+  emitToUser(req.user._id, "emergency:activated", payload);
+  guardianUsers.forEach(({ protectorUser }) =>
+    emitToUser(protectorUser._id, "emergency:activated", payload)
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Emergency mode activated",
+    data: payload,
+  });
+});
+
+export const sendEmergencyClearUserOtp = catchAsync(async (req, res) => {
+  const session = await findActiveEmergencySession(req.user._id);
+  if (!session) {
+    throw new AppError(httpStatus.NOT_FOUND, "No active emergency mode found");
+  }
+
+  const otpPayload = await sendEmergencyClearOtp({
+    session,
+    user: req.user,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Emergency clear OTP sent successfully",
+    data: otpPayload,
+  });
+});
+
+export const verifyEmergencyClearUserOtp = catchAsync(async (req, res) => {
+  const { otp } = req.body;
+  if (!otp) {
+    throw new AppError(httpStatus.BAD_REQUEST, "OTP is required");
+  }
+
+  const session = await findActiveEmergencySession(req.user._id);
+  if (!session) {
+    throw new AppError(httpStatus.NOT_FOUND, "No active emergency mode found");
+  }
+
+  if (
+    !session.userClearOtpHash ||
+    session.userClearOtpHash !== hashOtp(otp) ||
+    session.userClearOtpExpiresAt?.getTime() < Date.now()
+  ) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid or expired OTP");
+  }
+
+  await resolveEmergencySession({
+    session,
+    clearedByUser: req.user,
+    clearedByRole: "user",
+  });
+  const data = await sendEmergencyResolvedNotifications({
+    session,
+    clearedByUser: req.user,
+    clearedByRole: "user",
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Emergency mode ended successfully",
+    data,
+  });
+});
+
+export const clearEmergencyByPrimaryGuardian = catchAsync(async (req, res) => {
+  const { sessionId } = req.params;
+  const session = await EmergencySession.findOne({
+    _id: sessionId,
+    status: "active",
+  });
+  if (!session) {
+    throw new AppError(httpStatus.NOT_FOUND, "Active emergency mode not found");
+  }
+
+  const primaryGuardian = await findPrimaryGuardianOverride(
+    session.user,
+    req.user
+  );
+  if (!primaryGuardian) {
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      "Only the primary guardian can end this emergency"
+    );
+  }
+
+  const guardianUsers = await findAcceptedGuardianUsers(session.user);
+  await resolveEmergencySession({
+    session,
+    clearedByUser: req.user,
+    clearedByRole: "primary_guardian",
+    clearedByGuardian: primaryGuardian,
+  });
+  const data = await sendEmergencyResolvedNotifications({
+    session,
+    clearedByUser: req.user,
+    clearedByRole: "primary_guardian",
+    guardianUsers,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Emergency mode ended by primary guardian",
+    data,
   });
 });
 
@@ -222,25 +720,180 @@ export const updateAccount = catchAsync(async (req, res) => {
 
 // Delete account (soft delete? we set isActive false or remove)
 export const deleteAccount = catchAsync(async (req, res) => {
+  throw new AppError(
+    httpStatus.BAD_REQUEST,
+    "Use the two-factor account removal flow"
+  );
+});
+
+export const sendAccountDeletionUserOtp = catchAsync(async (req, res) => {
   const { id } = req.params;
-  const account = await Account.findOne({ _id: id, user: req.user._id });
+  const account = await Account.findOne({
+    _id: id,
+    user: req.user._id,
+    isActive: true,
+  });
   if (!account) {
     throw new AppError(httpStatus.NOT_FOUND, "Account not found");
   }
 
-  // Check if linked to any guardian; we can either prevent deletion or remove relation
-  const guardianAccount = await GuardianAccount.findOne({ account: account._id });
-  if (guardianAccount) {
-    // Option: remove the relation first
-    await GuardianAccount.deleteOne({ account: account._id });
+  const primaryGuardian = await findPrimaryGuardianForUser(req.user._id);
+  if (!primaryGuardian) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "A primary guardian is required to remove an account"
+    );
   }
 
-  await account.deleteOne();
+  const otp = generateOTP(6);
+  const deletionRequest = await AccountDeletionRequest.findOneAndUpdate(
+    {
+      account: account._id,
+      user: req.user._id,
+      status: { $in: ["user_otp_sent", "guardian_otp_sent"] },
+    },
+    {
+      $set: {
+        account: account._id,
+        user: req.user._id,
+        primaryGuardian: primaryGuardian.guardian._id,
+        primaryGuardianUser: primaryGuardian.protectorUser._id,
+        userOtpHash: hashOtp(otp),
+        userOtpExpiresAt: new Date(Date.now() + OTP_WINDOW_MS),
+        guardianOtpHash: "",
+        status: "user_otp_sent",
+      },
+      $unset: {
+        userVerifiedAt: "",
+        guardianOtpExpiresAt: "",
+        guardianVerifiedAt: "",
+      },
+    },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+
+  await sendEmail({
+    email: req.user.email,
+    subject: "Account Removal OTP",
+    message: `Your OTP to remove ${account.bankName || account.accountType} is: ${otp}`,
+  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: "Account deleted successfully",
+    message: "OTP sent to user successfully",
+    data: {
+      requestId: deletionRequest._id,
+      expiresAt: deletionRequest.userOtpExpiresAt,
+      ...(process.env.NODE_ENV !== "production" ? { debugOtp: otp } : {}),
+    },
+  });
+});
+
+export const verifyAccountDeletionUserOtp = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const { otp } = req.body;
+
+  if (!otp) {
+    throw new AppError(httpStatus.BAD_REQUEST, "OTP is required");
+  }
+
+  const deletionRequest = await AccountDeletionRequest.findOne({
+    account: id,
+    user: req.user._id,
+    status: "user_otp_sent",
+  }).populate("account primaryGuardian primaryGuardianUser");
+
+  if (!deletionRequest?.account) {
+    throw new AppError(httpStatus.NOT_FOUND, "Account removal request not found");
+  }
+
+  if (
+    !deletionRequest.userOtpHash ||
+    deletionRequest.userOtpHash !== hashOtp(otp) ||
+    deletionRequest.userOtpExpiresAt?.getTime() < Date.now()
+  ) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid or expired OTP");
+  }
+
+  const guardianOtp = generateOTP(6);
+  deletionRequest.userVerifiedAt = new Date();
+  deletionRequest.guardianOtpHash = hashOtp(guardianOtp);
+  deletionRequest.guardianOtpExpiresAt = new Date(Date.now() + OTP_WINDOW_MS);
+  deletionRequest.status = "guardian_otp_sent";
+  await deletionRequest.save();
+
+  await sendEmail({
+    email: deletionRequest.primaryGuardianUser.email,
+    subject: "Guardian Account Removal OTP",
+    message: `${userLabel(req.user)} is removing ${deletionRequest.account.bankName || deletionRequest.account.accountType}. Your guardian OTP is: ${guardianOtp}`,
+  });
+
+  await createAndEmitNotification({
+    recipient: deletionRequest.primaryGuardianUser._id,
+    sender: req.user._id,
+    type: "account_deletion_approval_required",
+    title: "Account removal approval",
+    body: `${userLabel(req.user)} needs your OTP to remove a linked account.`,
+    data: {
+      requestId: deletionRequest._id,
+      account: accountSummary(deletionRequest.account),
+      requester: {
+        id: req.user._id,
+        name: req.user.name,
+        email: req.user.email,
+      },
+    },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "OTP sent to primary guardian successfully",
+    data: {
+      requestId: deletionRequest._id,
+      expiresAt: deletionRequest.guardianOtpExpiresAt,
+      ...(process.env.NODE_ENV !== "production" ? { debugOtp: guardianOtp } : {}),
+    },
+  });
+});
+
+export const verifyAccountDeletionGuardianOtp = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const { otp } = req.body;
+
+  if (!otp) {
+    throw new AppError(httpStatus.BAD_REQUEST, "OTP is required");
+  }
+
+  const deletionRequest = await AccountDeletionRequest.findOne({
+    account: id,
+    user: req.user._id,
+    status: "guardian_otp_sent",
+  }).populate("account primaryGuardianUser");
+
+  if (!deletionRequest?.account) {
+    throw new AppError(httpStatus.NOT_FOUND, "Account removal request not found");
+  }
+
+  if (
+    !deletionRequest.guardianOtpHash ||
+    deletionRequest.guardianOtpHash !== hashOtp(otp) ||
+    deletionRequest.guardianOtpExpiresAt?.getTime() < Date.now()
+  ) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid or expired guardian OTP");
+  }
+
+  deletionRequest.guardianVerifiedAt = new Date();
+  deletionRequest.status = "deleted";
+  await deletionRequest.save();
+
+  await deleteAccountWithLinks(deletionRequest.account);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Account removed successfully",
     data: null,
   });
 });
@@ -497,7 +1150,7 @@ export const verifyLimitIncreaseOtp = catchAsync(async (req, res) => {
     if (Date.now() > requestDeadline) {
       await lockLimitRequest(
         limitRequest,
-        "Transfer limit OTP was not submitted within 5 minutes"
+        "Transfer limit OTP was not submitted within 1 minute 30 seconds"
       );
       throw new AppError(httpStatus.BAD_REQUEST, "Time expired. Account locked.");
     }
@@ -595,7 +1248,7 @@ export const timeoutLimitIncreaseOtp = catchAsync(async (req, res) => {
 
   const lockPayload = await lockLimitRequest(
     limitRequest,
-    "Transfer limit OTP was not submitted within 5 minutes"
+    "Transfer limit OTP was not submitted within 1 minute 30 seconds"
   );
 
   sendResponse(res, {

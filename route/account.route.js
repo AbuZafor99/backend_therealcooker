@@ -3,24 +3,47 @@ import {
   createAccount,
   getAccounts,
   getAccount,
+  getEmergencyStatus,
+  activateEmergencyMode,
+  sendEmergencyClearUserOtp,
+  verifyEmergencyClearUserOtp,
+  clearEmergencyByPrimaryGuardian,
   updateAccount,
   deleteAccount,
+  sendAccountDeletionUserOtp,
+  verifyAccountDeletionUserOtp,
+  verifyAccountDeletionGuardianOtp,
   simulateLimitIncrease,
   sendLimitIncreaseOtp,
   verifyLimitIncreaseOtp,
   timeoutLimitIncreaseOtp,
 } from "../controller/account.controller.js";
 import { protect } from "../middleware/auth.middleware.js";
+import { uploadLocal } from "../middleware/multer.middleware.js";
 
 const router = express.Router();
 
 router.use(protect); // All routes require authentication
 
 router.route("/")
-  .post(createAccount)
+  .post(uploadLocal.single("image"), createAccount)
   .get(getAccounts);
 
+router.get("/emergency/status", getEmergencyStatus);
+router.post("/emergency/activate", activateEmergencyMode);
+router.post("/emergency/clear/send-user-otp", sendEmergencyClearUserOtp);
+router.post("/emergency/clear/verify-user-otp", verifyEmergencyClearUserOtp);
+router.post(
+  "/emergency/:sessionId/guardian-clear",
+  clearEmergencyByPrimaryGuardian
+);
 router.post("/:id/test/increase-limit", simulateLimitIncrease);
+router.post("/:id/delete/send-user-otp", sendAccountDeletionUserOtp);
+router.post("/:id/delete/verify-user-otp", verifyAccountDeletionUserOtp);
+router.post(
+  "/:id/delete/verify-guardian-otp",
+  verifyAccountDeletionGuardianOtp
+);
 router.post(
   "/:id/test/limit-increase-requests/:requestId/send-otp",
   sendLimitIncreaseOtp
