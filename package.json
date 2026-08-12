@@ -2,14 +2,13 @@
   "name": "backend",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon -L server.js",
-    "staging": "env-cmd -f .env.staging node server.js",
-    "prod": "env-cmd -f .env.production node server.js",
-    "beta": "env-cmd -f .env.beta node server.js"
+    "stop": "sh ./scripts/free-port.sh",
+    "predev": "npm run stop",
+    "dev": "nodemon --no-stdin server.js"
   },
   "author": "",
   "license": "ISC",

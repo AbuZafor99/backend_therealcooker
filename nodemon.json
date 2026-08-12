@@ -1,0 +1,26 @@
+{
+  "watch": [
+    "server.js",
+    "confiig",
+    "controller",
+    "cron",
+    "errors",
+    "mainroute",
+    "middleware",
+    "model",
+    "route",
+    "utils"
+  ],
+  "ext": "js,json",
+  "ignore": [
+    "public/**",
+    "postman/**",
+    "node_modules/**",
+    ".git/**",
+    "package-lock.json",
+    "**/*.test.js"
+  ],
+  "delay": "1000",
+  "signal": "SIGTERM",
+  "verbose": false
+}
