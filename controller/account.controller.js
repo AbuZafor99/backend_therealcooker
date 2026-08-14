@@ -994,6 +994,17 @@ export const simulateLimitIncrease = catchAsync(async (req, res) => {
   });
   const attemptNumber = previousAttempts + 1;
 
+  // Suspicious only if another increase for this account landed within the
+  // last 24 hours — a lifetime "2nd attempt ever" counter isn't what matters
+  // here. Once 24 hours pass with no activity, the next increase is treated
+  // as a fresh first-time increase again, and it re-starts the 24-hour watch.
+  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const recentAttempt = await LimitIncreaseRequest.findOne({
+    account: account._id,
+    createdAt: { $gte: twentyFourHoursAgo },
+  }).sort({ createdAt: -1 });
+  const isSuspicious = Boolean(recentAttempt);
+
   const limitRequest = await LimitIncreaseRequest.create({
     account: account._id,
     user: req.user._id,
@@ -1002,17 +1013,17 @@ export const simulateLimitIncrease = catchAsync(async (req, res) => {
     previousLimit,
     requestedLimit: nextLimit,
     attemptNumber,
+    isSuspicious,
   });
 
   const requesterName = req.user.name || req.user.email;
-  const secondAttemptOrMore = attemptNumber >= 2;
   const notificationPayload = {
     requestId: limitRequest._id,
     attemptNumber,
     account: accountSummary(account),
     previousLimit,
     requestedLimit: nextLimit,
-    expiresAt: secondAttemptOrMore
+    expiresAt: isSuspicious
       ? new Date(limitRequest.createdAt.getTime() + OTP_WINDOW_MS)
       : null,
     requester: {
@@ -1025,12 +1036,14 @@ export const simulateLimitIncrease = catchAsync(async (req, res) => {
       name: guardianLink.protectorUser.name,
       email: guardianLink.protectorUser.email,
     },
-    actions: secondAttemptOrMore
+    actions: isSuspicious
       ? limitRequestActions(account._id, limitRequest._id)
       : {},
   };
 
-  if (secondAttemptOrMore) {
+  if (isSuspicious) {
+    // Another increase happened within the last 24 hours — hold off on
+    // applying it until the guardian approves and the owner verifies the OTP.
     await Promise.all([
       createAndEmitNotification({
         recipient: guardianLink.protectorUser._id,
@@ -1052,11 +1065,19 @@ export const simulateLimitIncrease = catchAsync(async (req, res) => {
 
     emitToUser(req.user._id, "limit-increase:otp-required", notificationPayload);
   } else {
+    // No guardian/OTP gate needed — apply the new limit right away and just
+    // let both sides know it happened.
+    account.simulatedTransferLimit = nextLimit;
+    await account.save();
+
+    limitRequest.status = "approved";
+    await limitRequest.save();
+
     await Promise.all([
       createAndEmitNotification({
         recipient: guardianLink.protectorUser._id,
         sender: req.user._id,
-        type: "limit_increase_first_attempt",
+        type: "limit_increase_applied",
         title: "Limit increase",
         body: `${requesterName} increased a transfer limit from ${previousLimit} to ${nextLimit}.`,
         data: notificationPayload,
@@ -1064,9 +1085,9 @@ export const simulateLimitIncrease = catchAsync(async (req, res) => {
       createAndEmitNotification({
         recipient: req.user._id,
         sender: guardianLink.protectorUser._id,
-        type: "limit_increase_first_attempt",
+        type: "limit_increase_applied",
         title: "Limit increase",
-        body: `Your transfer limit increase from ${previousLimit} to ${nextLimit} was recorded.`,
+        body: `Your transfer limit was increased from ${previousLimit} to ${nextLimit}.`,
         data: notificationPayload,
       }),
     ]);
@@ -1075,10 +1096,10 @@ export const simulateLimitIncrease = catchAsync(async (req, res) => {
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
     success: true,
-    message: secondAttemptOrMore
-      ? "Second limit increase simulation sent to guardian"
-      : "Limit increase simulation sent to guardian",
-    data: limitRequest,
+    message: isSuspicious
+      ? "Repeated limit increase detected — sent to guardian for approval"
+      : "Transfer limit increased",
+    data: { request: limitRequest, account },
   });
 });
 
@@ -1118,10 +1139,10 @@ export const sendLimitIncreaseOtp = catchAsync(async (req, res) => {
     );
   }
 
-  if (limitRequest.attemptNumber < 2) {
+  if (!limitRequest.isSuspicious) {
     throw new AppError(
       httpStatus.BAD_REQUEST,
-      "OTP can only be sent from the second limit increase attempt"
+      "OTP can only be sent for a suspicious (repeated within 24h) limit increase"
     );
   }
 
@@ -1197,7 +1218,7 @@ export const verifyLimitIncreaseOtp = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, "OTP verification request not found");
   }
 
-  if (limitRequest.attemptNumber >= 2) {
+  if (limitRequest.isSuspicious) {
     const requestDeadline =
       new Date(limitRequest.createdAt).getTime() + OTP_WINDOW_MS;
     if (Date.now() > requestDeadline) {
@@ -1289,7 +1310,7 @@ export const timeoutLimitIncreaseOtp = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, "Pending limit request not found");
   }
 
-  if (limitRequest.attemptNumber < 2) {
+  if (!limitRequest.isSuspicious) {
     throw new AppError(httpStatus.BAD_REQUEST, "Only suspicious attempts can time out");
   }
 

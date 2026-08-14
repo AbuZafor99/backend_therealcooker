@@ -40,6 +40,13 @@ const limitIncreaseRequestSchema = new Schema(
       required: true,
       min: 1,
     },
+    // True when another limit-increase request for this account landed
+    // within the last 24 hours of this one — that's what actually gates the
+    // guardian/OTP flow now, not attemptNumber (a lifetime counter).
+    isSuspicious: {
+      type: Boolean,
+      default: false,
+    },
     status: {
       type: String,
       enum: ["notified", "otp_sent", "approved", "locked"],
