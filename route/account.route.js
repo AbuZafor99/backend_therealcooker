@@ -10,9 +10,9 @@ import {
   clearEmergencyByPrimaryGuardian,
   updateAccount,
   deleteAccount,
-  sendAccountDeletionUserOtp,
-  verifyAccountDeletionUserOtp,
-  verifyAccountDeletionGuardianOtp,
+  requestAccountDeletion,
+  sendAccountDeletionOtp,
+  verifyAccountDeletionOtp,
   simulateLimitIncrease,
   sendLimitIncreaseOtp,
   verifyLimitIncreaseOtp,
@@ -38,12 +38,9 @@ router.post(
   clearEmergencyByPrimaryGuardian
 );
 router.post("/:id/test/increase-limit", simulateLimitIncrease);
-router.post("/:id/delete/send-user-otp", sendAccountDeletionUserOtp);
-router.post("/:id/delete/verify-user-otp", verifyAccountDeletionUserOtp);
-router.post(
-  "/:id/delete/verify-guardian-otp",
-  verifyAccountDeletionGuardianOtp
-);
+router.post("/:id/delete/request", requestAccountDeletion);
+router.post("/:id/delete/:requestId/send-otp", sendAccountDeletionOtp);
+router.post("/:id/delete/:requestId/verify-otp", verifyAccountDeletionOtp);
 router.post(
   "/:id/test/limit-increase-requests/:requestId/send-otp",
   sendLimitIncreaseOtp

@@ -23,32 +23,29 @@ const accountDeletionRequestSchema = new Schema(
       type: Schema.Types.ObjectId,
       ref: "User",
       required: true,
+      index: true,
     },
-    userOtpHash: {
-      type: String,
-      default: "",
-    },
-    userOtpExpiresAt: {
-      type: Date,
-    },
-    userVerifiedAt: {
-      type: Date,
-    },
-    guardianOtpHash: {
-      type: String,
-      default: "",
-    },
-    guardianOtpExpiresAt: {
-      type: Date,
-    },
-    guardianVerifiedAt: {
-      type: Date,
-    },
+    // "notified"  -> primary guardian was alerted, no OTP issued yet
+    // "otp_sent"  -> guardian approved; OTP is live for the account owner
+    // "deleted"   -> OTP verified, account removed
     status: {
       type: String,
-      enum: ["user_otp_sent", "guardian_otp_sent", "deleted"],
-      default: "user_otp_sent",
+      enum: ["notified", "otp_sent", "deleted"],
+      default: "notified",
       index: true,
+    },
+    otpHash: {
+      type: String,
+      default: "",
+    },
+    otpExpiresAt: {
+      type: Date,
+    },
+    otpSentAt: {
+      type: Date,
+    },
+    verifiedAt: {
+      type: Date,
     },
   },
   { timestamps: true }
