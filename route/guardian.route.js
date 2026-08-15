@@ -8,6 +8,9 @@ import {
   updateGuardianAccounts,
   acceptGuardianInvite,
   rejectGuardianInvite,
+  makeGuardianPrimary,
+  sendGuardianDeletionOtp,
+  verifyGuardianDeletionOtp,
 } from "../controller/guardian.controller.js";
 import { protect } from "../middleware/auth.middleware.js";
 
@@ -21,6 +24,9 @@ router.route("/")
 
 router.post("/:id/accept", acceptGuardianInvite);
 router.post("/:id/reject", rejectGuardianInvite);
+router.put("/:id/make-primary", makeGuardianPrimary);
+router.post("/:id/delete/send-otp", sendGuardianDeletionOtp);
+router.post("/:id/delete/verify-otp", verifyGuardianDeletionOtp);
 
 router.route("/:id")
   .get(getGuardian)

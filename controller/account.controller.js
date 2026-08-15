@@ -726,7 +726,17 @@ export const deleteAccount = catchAsync(async (req, res) => {
   );
 });
 
-export const sendAccountDeletionUserOtp = catchAsync(async (req, res) => {
+// Account deletion now runs guardian-first: the owner just notifies their
+// primary guardian, the guardian approves in-app (pushing the OTP to the
+// owner in real time over the socket + email/push), and the owner enters
+// that OTP to finish. There is no more "owner verifies their own OTP" step.
+const DELETION_OTP_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
+
+const deletionRequestActions = (accountId, requestId) => ({
+  sendOtp: `/api/v1/accounts/${accountId}/delete/${requestId}/send-otp`,
+});
+
+export const requestAccountDeletion = catchAsync(async (req, res) => {
   const { id } = req.params;
   const account = await Account.findOne({
     _id: id,
@@ -745,12 +755,11 @@ export const sendAccountDeletionUserOtp = catchAsync(async (req, res) => {
     );
   }
 
-  const otp = generateOTP(6);
   const deletionRequest = await AccountDeletionRequest.findOneAndUpdate(
     {
       account: account._id,
       user: req.user._id,
-      status: { $in: ["user_otp_sent", "guardian_otp_sent"] },
+      status: { $in: ["notified", "otp_sent"] },
     },
     {
       $set: {
@@ -758,108 +767,120 @@ export const sendAccountDeletionUserOtp = catchAsync(async (req, res) => {
         user: req.user._id,
         primaryGuardian: primaryGuardian.guardian._id,
         primaryGuardianUser: primaryGuardian.protectorUser._id,
-        userOtpHash: hashOtp(otp),
-        userOtpExpiresAt: new Date(Date.now() + OTP_WINDOW_MS),
-        guardianOtpHash: "",
-        status: "user_otp_sent",
+        otpHash: "",
+        status: "notified",
       },
-      $unset: {
-        userVerifiedAt: "",
-        guardianOtpExpiresAt: "",
-        guardianVerifiedAt: "",
-      },
+      $unset: { otpExpiresAt: "", otpSentAt: "", verifiedAt: "" },
     },
     { new: true, upsert: true, setDefaultsOnInsert: true }
   );
 
-  await sendEmail({
-    email: req.user.email,
-    subject: "Account Removal OTP",
-    message: `Your OTP to remove ${account.bankName || account.accountType} is: ${otp}`,
-  });
-
-  sendResponse(res, {
-    statusCode: httpStatus.OK,
-    success: true,
-    message: "OTP sent to user successfully",
-    data: {
-      requestId: deletionRequest._id,
-      expiresAt: deletionRequest.userOtpExpiresAt,
-      ...(process.env.NODE_ENV !== "production" ? { debugOtp: otp } : {}),
-    },
-  });
-});
-
-export const verifyAccountDeletionUserOtp = catchAsync(async (req, res) => {
-  const { id } = req.params;
-  const { otp } = req.body;
-
-  if (!otp) {
-    throw new AppError(httpStatus.BAD_REQUEST, "OTP is required");
-  }
-
-  const deletionRequest = await AccountDeletionRequest.findOne({
-    account: id,
-    user: req.user._id,
-    status: "user_otp_sent",
-  }).populate("account primaryGuardian primaryGuardianUser");
-
-  if (!deletionRequest?.account) {
-    throw new AppError(httpStatus.NOT_FOUND, "Account removal request not found");
-  }
-
-  if (
-    !deletionRequest.userOtpHash ||
-    deletionRequest.userOtpHash !== hashOtp(otp) ||
-    deletionRequest.userOtpExpiresAt?.getTime() < Date.now()
-  ) {
-    throw new AppError(httpStatus.BAD_REQUEST, "Invalid or expired OTP");
-  }
-
-  const guardianOtp = generateOTP(6);
-  deletionRequest.userVerifiedAt = new Date();
-  deletionRequest.guardianOtpHash = hashOtp(guardianOtp);
-  deletionRequest.guardianOtpExpiresAt = new Date(Date.now() + OTP_WINDOW_MS);
-  deletionRequest.status = "guardian_otp_sent";
-  await deletionRequest.save();
-
-  await sendEmail({
-    email: deletionRequest.primaryGuardianUser.email,
-    subject: "Guardian Account Removal OTP",
-    message: `${userLabel(req.user)} is removing ${deletionRequest.account.bankName || deletionRequest.account.accountType}. Your guardian OTP is: ${guardianOtp}`,
-  });
+  const requesterName = userLabel(req.user);
 
   await createAndEmitNotification({
-    recipient: deletionRequest.primaryGuardianUser._id,
+    recipient: primaryGuardian.protectorUser._id,
     sender: req.user._id,
-    type: "account_deletion_approval_required",
-    title: "Account removal approval",
-    body: `${userLabel(req.user)} needs your OTP to remove a linked account.`,
+    type: "account_deletion_requested",
+    title: "Account removal approval needed",
+    body: `${requesterName} wants to remove a linked account and needs your approval.`,
     data: {
       requestId: deletionRequest._id,
-      account: accountSummary(deletionRequest.account),
+      account: accountSummary(account),
       requester: {
         id: req.user._id,
         name: req.user.name,
         email: req.user.email,
       },
+      actions: deletionRequestActions(account._id, deletionRequest._id),
     },
   });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: "OTP sent to primary guardian successfully",
+    message: "Your primary guardian was notified to approve this removal",
+    data: { requestId: deletionRequest._id },
+  });
+});
+
+export const sendAccountDeletionOtp = catchAsync(async (req, res) => {
+  const { id, requestId } = req.params;
+
+  // Guardian-invoked. Accept both "notified" (first send) and "otp_sent"
+  // (guardian re-sending) so the button keeps working on repeat taps.
+  const deletionRequest = await AccountDeletionRequest.findOne({
+    _id: requestId,
+    account: id,
+    primaryGuardianUser: req.user._id,
+    status: { $in: ["notified", "otp_sent"] },
+  }).populate("account user");
+
+  if (!deletionRequest?.account) {
+    throw new AppError(
+      httpStatus.NOT_FOUND,
+      "No active removal request to approve for this account"
+    );
+  }
+
+  const otp = generateOTP(6);
+  deletionRequest.otpHash = hashOtp(otp);
+  deletionRequest.otpExpiresAt = new Date(Date.now() + DELETION_OTP_WINDOW_MS);
+  deletionRequest.otpSentAt = new Date();
+  deletionRequest.status = "otp_sent";
+  await deletionRequest.save();
+
+  let emailSent = true;
+  try {
+    await sendEmail({
+      email: deletionRequest.user.email,
+      subject: "Account Removal OTP",
+      message: `Your guardian approved removing ${deletionRequest.account.bankName || deletionRequest.account.accountType}. Your OTP is: ${otp}`,
+    });
+  } catch (error) {
+    emailSent = false;
+    console.error("Account deletion OTP email failed:", error);
+  }
+
+  await trySendPushNotification(
+    [deletionRequest.user._id],
+    "Account removal OTP",
+    `Your account removal OTP is ${otp}`
+  );
+
+  await createAndEmitNotification({
+    recipient: deletionRequest.user._id,
+    sender: req.user._id,
+    type: "account_deletion_otp_required",
+    title: "Account removal OTP sent",
+    body: `${userLabel(req.user)} approved your account removal. Your OTP is ${otp}.`,
     data: {
       requestId: deletionRequest._id,
-      expiresAt: deletionRequest.guardianOtpExpiresAt,
-      ...(process.env.NODE_ENV !== "production" ? { debugOtp: guardianOtp } : {}),
+      account: accountSummary(deletionRequest.account),
+      guardian: {
+        id: req.user._id,
+        name: req.user.name,
+        email: req.user.email,
+      },
+      otp,
+      expiresAt: deletionRequest.otpExpiresAt,
+    },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "OTP sent to the account owner",
+    data: {
+      requestId: deletionRequest._id,
+      expiresAt: deletionRequest.otpExpiresAt,
+      emailSent,
+      ...(process.env.NODE_ENV !== "production" ? { debugOtp: otp } : {}),
     },
   });
 });
 
-export const verifyAccountDeletionGuardianOtp = catchAsync(async (req, res) => {
-  const { id } = req.params;
+export const verifyAccountDeletionOtp = catchAsync(async (req, res) => {
+  const { id, requestId } = req.params;
   const { otp } = req.body;
 
   if (!otp) {
@@ -867,9 +888,10 @@ export const verifyAccountDeletionGuardianOtp = catchAsync(async (req, res) => {
   }
 
   const deletionRequest = await AccountDeletionRequest.findOne({
+    _id: requestId,
     account: id,
     user: req.user._id,
-    status: "guardian_otp_sent",
+    status: "otp_sent",
   }).populate("account primaryGuardianUser");
 
   if (!deletionRequest?.account) {
@@ -877,18 +899,49 @@ export const verifyAccountDeletionGuardianOtp = catchAsync(async (req, res) => {
   }
 
   if (
-    !deletionRequest.guardianOtpHash ||
-    deletionRequest.guardianOtpHash !== hashOtp(otp) ||
-    deletionRequest.guardianOtpExpiresAt?.getTime() < Date.now()
+    !deletionRequest.otpHash ||
+    deletionRequest.otpHash !== hashOtp(otp) ||
+    deletionRequest.otpExpiresAt?.getTime() < Date.now()
   ) {
-    throw new AppError(httpStatus.BAD_REQUEST, "Invalid or expired guardian OTP");
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid or expired OTP");
   }
 
-  deletionRequest.guardianVerifiedAt = new Date();
+  deletionRequest.verifiedAt = new Date();
   deletionRequest.status = "deleted";
   await deletionRequest.save();
 
   await deleteAccountWithLinks(deletionRequest.account);
+
+  const confirmationPayload = {
+    requestId: deletionRequest._id,
+    account: accountSummary(deletionRequest.account),
+  };
+
+  await Promise.all([
+    createAndEmitNotification({
+      recipient: req.user._id,
+      sender: deletionRequest.primaryGuardianUser._id,
+      type: "account_deletion_completed",
+      title: "Account removed",
+      body: `${deletionRequest.account.bankName || deletionRequest.account.accountType} was removed from your linked accounts.`,
+      data: confirmationPayload,
+    }),
+    createAndEmitNotification({
+      recipient: deletionRequest.primaryGuardianUser._id,
+      sender: req.user._id,
+      type: "account_deletion_completed",
+      title: "Account removed",
+      body: `${userLabel(req.user)}'s account was removed after your approval.`,
+      data: confirmationPayload,
+    }),
+  ]);
+
+  emitToUser(req.user._id, "account-deletion:completed", confirmationPayload);
+  emitToUser(
+    deletionRequest.primaryGuardianUser._id,
+    "account-deletion:completed",
+    confirmationPayload
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -941,6 +994,17 @@ export const simulateLimitIncrease = catchAsync(async (req, res) => {
   });
   const attemptNumber = previousAttempts + 1;
 
+  // Suspicious only if another increase for this account landed within the
+  // last 24 hours — a lifetime "2nd attempt ever" counter isn't what matters
+  // here. Once 24 hours pass with no activity, the next increase is treated
+  // as a fresh first-time increase again, and it re-starts the 24-hour watch.
+  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const recentAttempt = await LimitIncreaseRequest.findOne({
+    account: account._id,
+    createdAt: { $gte: twentyFourHoursAgo },
+  }).sort({ createdAt: -1 });
+  const isSuspicious = Boolean(recentAttempt);
+
   const limitRequest = await LimitIncreaseRequest.create({
     account: account._id,
     user: req.user._id,
@@ -949,17 +1013,17 @@ export const simulateLimitIncrease = catchAsync(async (req, res) => {
     previousLimit,
     requestedLimit: nextLimit,
     attemptNumber,
+    isSuspicious,
   });
 
   const requesterName = req.user.name || req.user.email;
-  const secondAttemptOrMore = attemptNumber >= 2;
   const notificationPayload = {
     requestId: limitRequest._id,
     attemptNumber,
     account: accountSummary(account),
     previousLimit,
     requestedLimit: nextLimit,
-    expiresAt: secondAttemptOrMore
+    expiresAt: isSuspicious
       ? new Date(limitRequest.createdAt.getTime() + OTP_WINDOW_MS)
       : null,
     requester: {
@@ -972,12 +1036,14 @@ export const simulateLimitIncrease = catchAsync(async (req, res) => {
       name: guardianLink.protectorUser.name,
       email: guardianLink.protectorUser.email,
     },
-    actions: secondAttemptOrMore
+    actions: isSuspicious
       ? limitRequestActions(account._id, limitRequest._id)
       : {},
   };
 
-  if (secondAttemptOrMore) {
+  if (isSuspicious) {
+    // Another increase happened within the last 24 hours — hold off on
+    // applying it until the guardian approves and the owner verifies the OTP.
     await Promise.all([
       createAndEmitNotification({
         recipient: guardianLink.protectorUser._id,
@@ -999,11 +1065,19 @@ export const simulateLimitIncrease = catchAsync(async (req, res) => {
 
     emitToUser(req.user._id, "limit-increase:otp-required", notificationPayload);
   } else {
+    // No guardian/OTP gate needed — apply the new limit right away and just
+    // let both sides know it happened.
+    account.simulatedTransferLimit = nextLimit;
+    await account.save();
+
+    limitRequest.status = "approved";
+    await limitRequest.save();
+
     await Promise.all([
       createAndEmitNotification({
         recipient: guardianLink.protectorUser._id,
         sender: req.user._id,
-        type: "limit_increase_first_attempt",
+        type: "limit_increase_applied",
         title: "Limit increase",
         body: `${requesterName} increased a transfer limit from ${previousLimit} to ${nextLimit}.`,
         data: notificationPayload,
@@ -1011,9 +1085,9 @@ export const simulateLimitIncrease = catchAsync(async (req, res) => {
       createAndEmitNotification({
         recipient: req.user._id,
         sender: guardianLink.protectorUser._id,
-        type: "limit_increase_first_attempt",
+        type: "limit_increase_applied",
         title: "Limit increase",
-        body: `Your transfer limit increase from ${previousLimit} to ${nextLimit} was recorded.`,
+        body: `Your transfer limit was increased from ${previousLimit} to ${nextLimit}.`,
         data: notificationPayload,
       }),
     ]);
@@ -1022,10 +1096,10 @@ export const simulateLimitIncrease = catchAsync(async (req, res) => {
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
     success: true,
-    message: secondAttemptOrMore
-      ? "Second limit increase simulation sent to guardian"
-      : "Limit increase simulation sent to guardian",
-    data: limitRequest,
+    message: isSuspicious
+      ? "Repeated limit increase detected — sent to guardian for approval"
+      : "Transfer limit increased",
+    data: { request: limitRequest, account },
   });
 });
 
@@ -1065,10 +1139,10 @@ export const sendLimitIncreaseOtp = catchAsync(async (req, res) => {
     );
   }
 
-  if (limitRequest.attemptNumber < 2) {
+  if (!limitRequest.isSuspicious) {
     throw new AppError(
       httpStatus.BAD_REQUEST,
-      "OTP can only be sent from the second limit increase attempt"
+      "OTP can only be sent for a suspicious (repeated within 24h) limit increase"
     );
   }
 
@@ -1144,7 +1218,7 @@ export const verifyLimitIncreaseOtp = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, "OTP verification request not found");
   }
 
-  if (limitRequest.attemptNumber >= 2) {
+  if (limitRequest.isSuspicious) {
     const requestDeadline =
       new Date(limitRequest.createdAt).getTime() + OTP_WINDOW_MS;
     if (Date.now() > requestDeadline) {
@@ -1236,7 +1310,7 @@ export const timeoutLimitIncreaseOtp = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, "Pending limit request not found");
   }
 
-  if (limitRequest.attemptNumber < 2) {
+  if (!limitRequest.isSuspicious) {
     throw new AppError(httpStatus.BAD_REQUEST, "Only suspicious attempts can time out");
   }
 
