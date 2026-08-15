@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import httpStatus from "http-status";
 import AppError from "../errors/AppError.js";
 import { Account } from "../model/account.model.js";
@@ -5,21 +6,29 @@ import { Guardian } from "../model/guardian.model.js";
 import { GuardianAccount } from "../model/guardianAccount.model.js";
 import { User } from "../model/user.model.js";
 import catchAsync from "../utils/catchAsync.js";
+import { generateOTP } from "../utils/commonMethod.js";
 import { createAndEmitNotification } from "../utils/notification.js";
+import { sendEmail } from "../utils/sendEmail.js";
 import sendResponse from "../utils/sendResponse.js";
+
+const hashOtp = (otp) => crypto.createHash("sha256").update(otp).digest("hex");
+const GUARDIAN_DELETE_OTP_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
+
+const trySendPushNotification = async (userIds, title, body) => {
+  try {
+    const { sendPushNotification } = await import(
+      "../utils/sendPushNotification.js"
+    );
+    await sendPushNotification(userIds, title, body);
+  } catch (error) {
+    console.error("Push notification skipped:", error);
+  }
+};
 
 const guardianInviteActions = (guardianId) => ({
   accept: `/api/v1/guardians/${guardianId}/accept`,
   reject: `/api/v1/guardians/${guardianId}/reject`,
 });
-
-const accountLabel = (accounts) => {
-  if (!accounts.length) return "your selected account";
-  return accounts
-    .map((account) => account.bankName || account.accountType)
-    .filter(Boolean)
-    .join(", ");
-};
 
 const buildGuardianPayload = async (guardian) => {
   const guardianObject = guardian.toObject ? guardian.toObject() : guardian;
@@ -80,13 +89,12 @@ const mergeAccountsIntoGuardian = async (guardian, accounts, requester) => {
 
   if (newAccounts.length > 0 && guardian.protectorUser) {
     const requesterName = requester.name || requester.email;
-    const accountStr = accountLabel(newAccounts);
     await createAndEmitNotification({
       recipient: guardian.protectorUser,
       sender: requester._id,
       type: "guardian_invite",
       title: "Guardian accounts updated",
-      body: `${requesterName} added you as a guardian for ${accountStr}.`,
+      body: `${requesterName} added you to protect more of their accounts.`,
       data: {
         guardianId: guardian._id,
         requester: {
@@ -215,13 +223,13 @@ export const createGuardian = catchAsync(async (req, res) => {
   });
 
   const requesterName = req.user.name || req.user.email;
-  const accountStr = accountLabel(accounts);
+  const guardianRole = guardian.isPrimary ? "primary" : "secondary";
   await createAndEmitNotification({
     recipient: protectorUser._id,
     sender: req.user._id,
     type: "guardian_invite",
     title: "Guardian invite",
-    body: `${requesterName} invited you as a guardian for ${accountStr === "your selected account" ? "their account" : accountStr}.`,
+    body: `${requesterName} invited you to be their ${guardianRole} guardian.`,
     data: {
       guardianId: guardian._id,
       requester: {
@@ -307,23 +315,140 @@ export const updateGuardian = catchAsync(async (req, res) => {
   });
 });
 
-// Delete guardian (cascade removes junction entries)
+// Direct delete is blocked — removing a guardian must go through the OTP
+// flow below (sendGuardianDeletionOtp / verifyGuardianDeletionOtp) so the
+// owner has to confirm with a code sent to their own email + push.
 export const deleteGuardian = catchAsync(async (req, res) => {
+  throw new AppError(
+    httpStatus.BAD_REQUEST,
+    "Use the OTP-verified guardian removal flow"
+  );
+});
+
+// Switch which guardian is primary. Only one guardian can be primary at a
+// time, so this demotes whichever one currently holds it.
+export const makeGuardianPrimary = catchAsync(async (req, res) => {
   const { id } = req.params;
+
+  const guardian = await Guardian.findOne({
+    _id: id,
+    user: req.user._id,
+    status: "accepted",
+  });
+  if (!guardian) {
+    throw new AppError(httpStatus.NOT_FOUND, "Connected guardian not found");
+  }
+
+  if (!guardian.isPrimary) {
+    await Guardian.updateMany(
+      { user: req.user._id, isPrimary: true, _id: { $ne: guardian._id } },
+      { $set: { isPrimary: false } }
+    );
+    guardian.isPrimary = true;
+    await guardian.save();
+  }
+
+  const result = await buildGuardianPayload(guardian);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Primary guardian updated",
+    data: result,
+  });
+});
+
+export const sendGuardianDeletionOtp = catchAsync(async (req, res) => {
+  const { id } = req.params;
+
   const guardian = await Guardian.findOne({ _id: id, user: req.user._id });
   if (!guardian) {
     throw new AppError(httpStatus.NOT_FOUND, "Guardian not found");
   }
 
-  // Remove junction entries
+  const otp = generateOTP(6);
+  guardian.deletionOtpHash = hashOtp(otp);
+  guardian.deletionOtpExpiresAt = new Date(
+    Date.now() + GUARDIAN_DELETE_OTP_WINDOW_MS
+  );
+  await guardian.save();
+
+  let emailSent = true;
+  try {
+    await sendEmail({
+      email: req.user.email,
+      subject: "Remove Guardian OTP",
+      message: `Your OTP to remove ${guardian.name} as a guardian is: ${otp}`,
+    });
+  } catch (error) {
+    emailSent = false;
+    console.error("Guardian deletion OTP email failed:", error);
+  }
+
+  // Sent at the same time as the email, not as a fallback.
+  await trySendPushNotification(
+    [req.user._id],
+    "Remove guardian OTP",
+    `Your OTP to remove ${guardian.name} is ${otp}`
+  );
+
+  // In-app notification (Notifications tab / top snackbar / socket) — the
+  // email and native push above don't reach the app's own notification
+  // system, so without this the OTP never shows up there.
+  await createAndEmitNotification({
+    recipient: req.user._id,
+    sender: req.user._id,
+    type: "guardian_deletion_otp_sent",
+    title: "Guardian removal OTP sent",
+    body: `Your OTP to remove ${guardian.name} as a guardian is ${otp}.`,
+    data: {
+      guardianId: guardian._id,
+      guardianName: guardian.name,
+      expiresAt: guardian.deletionOtpExpiresAt,
+    },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "OTP sent",
+    data: {
+      guardianId: guardian._id,
+      expiresAt: guardian.deletionOtpExpiresAt,
+      emailSent,
+      ...(process.env.NODE_ENV !== "production" ? { debugOtp: otp } : {}),
+    },
+  });
+});
+
+export const verifyGuardianDeletionOtp = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const { otp } = req.body;
+
+  if (!otp) {
+    throw new AppError(httpStatus.BAD_REQUEST, "OTP is required");
+  }
+
+  const guardian = await Guardian.findOne({ _id: id, user: req.user._id });
+  if (!guardian) {
+    throw new AppError(httpStatus.NOT_FOUND, "Guardian not found");
+  }
+
+  if (
+    !guardian.deletionOtpHash ||
+    guardian.deletionOtpHash !== hashOtp(otp) ||
+    guardian.deletionOtpExpiresAt?.getTime() < Date.now()
+  ) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid or expired OTP");
+  }
+
   await GuardianAccount.deleteMany({ guardian: guardian._id });
-  // Delete guardian
   await guardian.deleteOne();
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: "Guardian deleted successfully",
+    message: "Guardian removed successfully",
     data: null,
   });
 });
@@ -487,6 +612,12 @@ export const rejectGuardianInvite = catchAsync(async (req, res) => {
   const requesterId = guardian.user._id;
   const protectorName = req.user.name || req.user.email;
 
+  // Build the response payload before deleting — the Flutter client parses
+  // this the same way it parses acceptGuardianInvite's response, so it must
+  // not be null (the guardian doc won't exist anymore once we delete it).
+  guardian.status = "rejected";
+  const result = await buildGuardianPayload(guardian);
+
   await guardian.deleteOne();
 
   await createAndEmitNotification({
@@ -514,6 +645,6 @@ export const rejectGuardianInvite = catchAsync(async (req, res) => {
     statusCode: httpStatus.OK,
     success: true,
     message: "Guardian invite rejected successfully",
-    data: null,
+    data: result,
   });
 });
