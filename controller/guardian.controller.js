@@ -345,15 +345,102 @@ export const updateGuardian = catchAsync(async (req, res) => {
   });
 });
 
-// Direct delete is blocked — removing a guardian must go through the
-// guardian-approval flow below (requestGuardianDeletion / sendGuardianDeletionOtp
-// / verifyGuardianDeletionOtp), the same guardian-first pattern used to
-// remove a protected account.
+// Cancels a still-pending invite before the protector has responded to it.
+// An already-accepted guardian can't be removed this way — that must go
+// through the guardian-approval flow (requestGuardianDeletion /
+// sendGuardianDeletionOtp / verifyGuardianDeletionOtp), the same
+// guardian-first pattern used to remove a protected account.
 export const deleteGuardian = catchAsync(async (req, res) => {
-  throw new AppError(
-    httpStatus.BAD_REQUEST,
-    "Use the guardian-approved removal flow"
-  );
+  const { id } = req.params;
+
+  const guardian = await Guardian.findOne({ _id: id, user: req.user._id });
+  if (!guardian) {
+    throw new AppError(httpStatus.NOT_FOUND, "Guardian not found");
+  }
+
+  if (guardian.status !== "pending") {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Use the guardian-approved removal flow"
+    );
+  }
+
+  if (guardian.protectorUser) {
+    const requesterName = userLabel(req.user);
+    await createAndEmitNotification({
+      recipient: guardian.protectorUser,
+      sender: req.user._id,
+      type: "guardian_invite_cancelled",
+      title: "Guardian invite cancelled",
+      body: `${requesterName} withdrew their guardian invite.`,
+      data: { guardianId: guardian._id },
+    });
+  }
+
+  await guardian.deleteOne();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Invite cancelled",
+    data: null,
+  });
+});
+
+// Re-notifies a still-pending invite that hasn't been responded to yet.
+// Doesn't touch requestedAccounts — just pushes a fresh guardian_invite so
+// there's an easy, obvious one to act on again. The client drops the
+// earlier unresponded invite for this guardianId the moment this one
+// arrives, so the protector only ever sees one live invite per person.
+export const resendGuardianInvite = catchAsync(async (req, res) => {
+  const { id } = req.params;
+
+  const guardian = await Guardian.findOne({
+    _id: id,
+    user: req.user._id,
+    status: "pending",
+  });
+  if (!guardian) {
+    throw new AppError(
+      httpStatus.NOT_FOUND,
+      "Pending guardian invite not found"
+    );
+  }
+
+  const accounts = await Account.find({
+    _id: { $in: guardian.requestedAccounts || [] },
+  });
+
+  const requesterName = userLabel(req.user);
+  const guardianRole = guardian.isPrimary ? "primary" : "secondary";
+  await createAndEmitNotification({
+    recipient: guardian.protectorUser,
+    sender: req.user._id,
+    type: "guardian_invite",
+    title: "Guardian invite",
+    body: `${requesterName} invited you to be their ${guardianRole} guardian.`,
+    data: {
+      guardianId: guardian._id,
+      requester: {
+        id: req.user._id,
+        name: req.user.name,
+        email: req.user.email,
+      },
+      accounts: accounts.map((account) => ({
+        id: account._id,
+        accountType: account.accountType,
+        bankName: account.bankName,
+      })),
+      actions: guardianInviteActions(guardian._id),
+    },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Invite resent",
+    data: { guardianId: guardian._id },
+  });
 });
 
 // Switch which guardian is primary. Only one guardian can be primary at a

@@ -8,6 +8,7 @@ import {
   updateGuardianAccounts,
   acceptGuardianInvite,
   rejectGuardianInvite,
+  resendGuardianInvite,
   makeGuardianPrimary,
   requestGuardianDeletion,
   sendGuardianDeletionOtp,
@@ -25,6 +26,7 @@ router.route("/")
 
 router.post("/:id/accept", acceptGuardianInvite);
 router.post("/:id/reject", rejectGuardianInvite);
+router.post("/:id/resend-invite", resendGuardianInvite);
 router.put("/:id/make-primary", makeGuardianPrimary);
 router.post("/:id/delete/request", requestGuardianDeletion);
 router.post("/:id/delete/:requestId/send-otp", sendGuardianDeletionOtp);

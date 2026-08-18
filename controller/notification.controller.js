@@ -1,3 +1,5 @@
+import httpStatus from "http-status";
+import AppError from "../errors/AppError.js";
 import { Guardian } from "../model/guardian.model.js";
 import { Notification } from "../model/notification.model.js";
 import catchAsync from "../utils/catchAsync.js";
@@ -56,5 +58,54 @@ export const getNotifications = catchAsync(async (req, res) => {
         pages: Math.ceil(total / limit),
       },
     },
+  });
+});
+
+export const getUnreadCount = catchAsync(async (req, res) => {
+  const count = await Notification.countDocuments({
+    recipient: req.user._id,
+    isRead: false,
+  });
+
+  sendResponse(res, {
+    statusCode: 200,
+    success: true,
+    message: "Unread count fetched successfully",
+    data: { count },
+  });
+});
+
+export const markNotificationRead = catchAsync(async (req, res) => {
+  const { id } = req.params;
+
+  const notification = await Notification.findOneAndUpdate(
+    { _id: id, recipient: req.user._id },
+    { $set: { isRead: true } },
+    { new: true }
+  );
+
+  if (!notification) {
+    throw new AppError(httpStatus.NOT_FOUND, "Notification not found");
+  }
+
+  sendResponse(res, {
+    statusCode: 200,
+    success: true,
+    message: "Notification marked as read",
+    data: notification,
+  });
+});
+
+export const markAllNotificationsRead = catchAsync(async (req, res) => {
+  await Notification.updateMany(
+    { recipient: req.user._id, isRead: false },
+    { $set: { isRead: true } }
+  );
+
+  sendResponse(res, {
+    statusCode: 200,
+    success: true,
+    message: "All notifications marked as read",
+    data: null,
   });
 });
