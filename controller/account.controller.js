@@ -9,6 +9,7 @@ import { EmergencySession } from "../model/emergencySession.model.js";
 import { Guardian } from "../model/guardian.model.js";
 import { GuardianAccount } from "../model/guardianAccount.model.js";
 import { LimitIncreaseRequest } from "../model/limitIncreaseRequest.model.js";
+import { Notification } from "../model/notification.model.js";
 import { User } from "../model/user.model.js";
 import { generateOTP } from "../utils/commonMethod.js";
 import { createAndEmitNotification } from "../utils/notification.js";
@@ -107,9 +108,12 @@ const resolveProtectorUser = async (guardian) => {
 };
 
 const findAcceptedGuardianUsers = async (userId) => {
+  // Only the primary guardian receives emergency alerts alongside the user;
+  // secondary guardians are intentionally excluded.
   const acceptedGuardians = await Guardian.find({
     user: userId,
     status: "accepted",
+    isPrimary: true,
   });
   const guardianUsers = [];
   for (const guardian of acceptedGuardians) {
@@ -241,6 +245,16 @@ const resolveEmergencySession = async ({
   session.userClearOtpHash = "";
   session.userClearOtpExpiresAt = undefined;
   await session.save();
+
+  // The original "sos_emergency_active" notifications/activities still carry
+  // active: true from when they were sent. Patch them so tapping an old
+  // alert later (from Notifications or Recent Activities) shows it's already
+  // resolved instead of re-opening the live emergency screen.
+  await Notification.updateMany(
+    { type: "sos_emergency_active", "data.id": session._id },
+    { $set: { "data.active": false } }
+  );
+
   return session;
 };
 
@@ -314,9 +328,12 @@ const lockLimitRequest = async (limitRequest, reason) => {
     },
   };
 
+  // Only the primary guardian receives emergency alerts alongside the user;
+  // secondary guardians are intentionally excluded.
   const acceptedGuardians = await Guardian.find({
     user: owner._id,
     status: "accepted",
+    isPrimary: true,
   });
   const guardianUsers = [];
   for (const guardian of acceptedGuardians) {
@@ -520,9 +537,12 @@ export const activateEmergencyMode = catchAsync(async (req, res) => {
     accounts: activeAccounts.map(accountSummary),
   };
 
+  // Only the primary guardian receives emergency alerts alongside the user;
+  // secondary guardians are intentionally excluded.
   const acceptedGuardians = await Guardian.find({
     user: req.user._id,
     status: "accepted",
+    isPrimary: true,
   });
   const guardianUsers = [];
   for (const guardian of acceptedGuardians) {
@@ -994,13 +1014,17 @@ export const simulateLimitIncrease = catchAsync(async (req, res) => {
   });
   const attemptNumber = previousAttempts + 1;
 
-  // Suspicious only if another increase for this account landed within the
-  // last 24 hours — a lifetime "2nd attempt ever" counter isn't what matters
-  // here. Once 24 hours pass with no activity, the next increase is treated
-  // as a fresh first-time increase again, and it re-starts the 24-hour watch.
+  // Suspicious only if this user made ANY limit-increase attempt within the
+  // last 24 hours — across every one of their accounts, not just this one.
+  // A change on bank X followed by a change on bank Y is exactly the
+  // pattern this is meant to catch, so the lookup is scoped to the user,
+  // not the account. A lifetime "2nd attempt ever" counter isn't what
+  // matters here either — once 24 hours pass with no activity anywhere,
+  // the next increase is treated as a fresh first-time increase again,
+  // and it re-starts the 24-hour watch.
   const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const recentAttempt = await LimitIncreaseRequest.findOne({
-    account: account._id,
+    user: req.user._id,
     createdAt: { $gte: twentyFourHoursAgo },
   }).sort({ createdAt: -1 });
   const isSuspicious = Boolean(recentAttempt);

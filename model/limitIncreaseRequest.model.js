@@ -40,9 +40,10 @@ const limitIncreaseRequestSchema = new Schema(
       required: true,
       min: 1,
     },
-    // True when another limit-increase request for this account landed
-    // within the last 24 hours of this one — that's what actually gates the
-    // guardian/OTP flow now, not attemptNumber (a lifetime counter).
+    // True when this user made another limit-increase request — on this
+    // account or any other of their accounts — within the 24 hours before
+    // this one. That's what actually gates the guardian/OTP flow now, not
+    // attemptNumber (a lifetime counter).
     isSuspicious: {
       type: Boolean,
       default: false,
@@ -74,6 +75,7 @@ const limitIncreaseRequestSchema = new Schema(
 );
 
 limitIncreaseRequestSchema.index({ account: 1, createdAt: -1 });
+limitIncreaseRequestSchema.index({ user: 1, createdAt: -1 });
 limitIncreaseRequestSchema.index({ guardianUser: 1, status: 1 });
 
 export const LimitIncreaseRequest = mongoose.model(
