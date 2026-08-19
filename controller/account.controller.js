@@ -307,18 +307,28 @@ const lockLimitRequest = async (limitRequest, reason) => {
   const owner = limitRequest.user;
   const guardianUser = limitRequest.guardianUser;
 
-  account.isLocked = true;
-  account.lockedReason = reason;
-  account.lockedAt = new Date();
-  await account.save();
+  // Failing to verify a suspicious limit increase in time is treated the
+  // same as an SOS lockdown: every one of the user's active accounts gets
+  // locked, not just the one whose limit was being changed (see
+  // activateEmergencyMode, which locks the same way).
+  const lockedAt = new Date();
+  const activeAccounts = await Account.find({
+    user: owner._id,
+    isActive: true,
+  });
+  await Account.updateMany(
+    { _id: { $in: activeAccounts.map((acc) => acc._id) } },
+    { $set: { isLocked: true, lockedReason: reason, lockedAt } }
+  );
 
   limitRequest.status = "locked";
-  limitRequest.lockedAt = new Date();
+  limitRequest.lockedAt = lockedAt;
   await limitRequest.save();
 
   const lockPayload = {
     requestId: limitRequest._id,
     account: accountSummary(account),
+    lockedAccounts: activeAccounts.map((acc) => acc._id),
     reason,
     lastKnownLocation: owner.location || null,
     user: {
@@ -354,8 +364,8 @@ const lockLimitRequest = async (limitRequest, reason) => {
       recipient: owner._id,
       sender: guardianUser._id,
       type: "account_locked",
-      title: "Account locked",
-      body: "Your account was locked after transfer limit verification failed.",
+      title: "Accounts locked",
+      body: "All of your linked accounts were locked after transfer limit verification failed.",
       data: lockPayload,
     }),
     ...guardianUsers.map(({ guardian, protectorUser }) =>
@@ -364,7 +374,7 @@ const lockLimitRequest = async (limitRequest, reason) => {
         sender: owner._id,
         type: "account_locked",
         title: "Emergency alert",
-        body: `${userLabel(owner)}'s account is locked.`,
+        body: `All of ${userLabel(owner)}'s linked accounts are locked.`,
         data: {
           ...lockPayload,
           guardianRole: guardian.isPrimary ? "primary" : "secondary",
@@ -1089,32 +1099,25 @@ export const simulateLimitIncrease = catchAsync(async (req, res) => {
 
     emitToUser(req.user._id, "limit-increase:otp-required", notificationPayload);
   } else {
-    // No guardian/OTP gate needed — apply the new limit right away and just
-    // let both sides know it happened.
+    // No guardian/OTP gate needed — apply the new limit right away.
     account.simulatedTransferLimit = nextLimit;
     await account.save();
 
     limitRequest.status = "approved";
     await limitRequest.save();
 
-    await Promise.all([
-      createAndEmitNotification({
-        recipient: guardianLink.protectorUser._id,
-        sender: req.user._id,
-        type: "limit_increase_applied",
-        title: "Limit increase",
-        body: `${requesterName} increased a transfer limit from ${previousLimit} to ${nextLimit}.`,
-        data: notificationPayload,
-      }),
-      createAndEmitNotification({
-        recipient: req.user._id,
-        sender: guardianLink.protectorUser._id,
-        type: "limit_increase_applied",
-        title: "Limit increase",
-        body: `Your transfer limit was increased from ${previousLimit} to ${nextLimit}.`,
-        data: notificationPayload,
-      }),
-    ]);
+    // Not suspicious (no other increase in the last 24h) — this is treated
+    // as a normal, isolated change, so only the owner is told. The
+    // guardian only needs to hear about it once it's actually flagged as
+    // suspicious above.
+    await createAndEmitNotification({
+      recipient: req.user._id,
+      sender: guardianLink.protectorUser._id,
+      type: "limit_increase_applied",
+      title: "Limit increase",
+      body: `Your transfer limit was increased from ${previousLimit} to ${nextLimit}.`,
+      data: notificationPayload,
+    });
   }
 
   sendResponse(res, {
@@ -1200,12 +1203,13 @@ export const sendLimitIncreaseOtp = catchAsync(async (req, res) => {
     sender: req.user._id,
     type: "limit_increase_otp_sent",
     title: "Verification OTP sent",
-    body: `${req.user.name || req.user.email} sent an OTP for your transfer limit verification.`,
+    body: `${req.user.name || req.user.email} sent an OTP for your transfer limit verification. Your OTP is ${otp}.`,
     data: {
       requestId: limitRequest._id,
       account: accountSummary(limitRequest.account),
       previousLimit: limitRequest.previousLimit,
       requestedLimit: limitRequest.requestedLimit,
+      otp,
       expiresAt: limitRequest.otpExpiresAt,
     },
   });
