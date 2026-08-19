@@ -4,15 +4,45 @@ import AppError from "../errors/AppError.js";
 import { Account } from "../model/account.model.js";
 import { Guardian } from "../model/guardian.model.js";
 import { GuardianAccount } from "../model/guardianAccount.model.js";
+import { GuardianDeletionRequest } from "../model/guardianDeletionRequest.model.js";
 import { User } from "../model/user.model.js";
 import catchAsync from "../utils/catchAsync.js";
 import { generateOTP } from "../utils/commonMethod.js";
 import { createAndEmitNotification } from "../utils/notification.js";
 import { sendEmail } from "../utils/sendEmail.js";
 import sendResponse from "../utils/sendResponse.js";
+import { emitToUser } from "../utils/socket.js";
 
 const hashOtp = (otp) => crypto.createHash("sha256").update(otp).digest("hex");
 const GUARDIAN_DELETE_OTP_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
+const userLabel = (user) => user?.name || user?.email || "User";
+
+// Resolves the requester's current primary guardian and the app account
+// behind it (if the protector has one), the same way accounts' removal
+// flow finds who has to approve.
+const findPrimaryGuardianForUser = async (userId) => {
+  const guardian = await Guardian.findOne({
+    user: userId,
+    isPrimary: true,
+    status: "accepted",
+  });
+  if (!guardian) return null;
+
+  let protectorUser = null;
+  if (guardian.protectorUser) {
+    protectorUser = await User.findById(guardian.protectorUser);
+  }
+  if (!protectorUser && guardian.email) {
+    protectorUser = await User.findOne({ email: guardian.email });
+  }
+
+  if (!protectorUser) return null;
+  return { guardian, protectorUser };
+};
+
+const guardianDeletionRequestActions = (guardianId, requestId) => ({
+  sendOtp: `/api/v1/guardians/${guardianId}/delete/${requestId}/send-otp`,
+});
 
 const trySendPushNotification = async (userIds, title, body) => {
   try {
@@ -315,14 +345,102 @@ export const updateGuardian = catchAsync(async (req, res) => {
   });
 });
 
-// Direct delete is blocked — removing a guardian must go through the OTP
-// flow below (sendGuardianDeletionOtp / verifyGuardianDeletionOtp) so the
-// owner has to confirm with a code sent to their own email + push.
+// Cancels a still-pending invite before the protector has responded to it.
+// An already-accepted guardian can't be removed this way — that must go
+// through the guardian-approval flow (requestGuardianDeletion /
+// sendGuardianDeletionOtp / verifyGuardianDeletionOtp), the same
+// guardian-first pattern used to remove a protected account.
 export const deleteGuardian = catchAsync(async (req, res) => {
-  throw new AppError(
-    httpStatus.BAD_REQUEST,
-    "Use the OTP-verified guardian removal flow"
-  );
+  const { id } = req.params;
+
+  const guardian = await Guardian.findOne({ _id: id, user: req.user._id });
+  if (!guardian) {
+    throw new AppError(httpStatus.NOT_FOUND, "Guardian not found");
+  }
+
+  if (guardian.status !== "pending") {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Use the guardian-approved removal flow"
+    );
+  }
+
+  if (guardian.protectorUser) {
+    const requesterName = userLabel(req.user);
+    await createAndEmitNotification({
+      recipient: guardian.protectorUser,
+      sender: req.user._id,
+      type: "guardian_invite_cancelled",
+      title: "Guardian invite cancelled",
+      body: `${requesterName} withdrew their guardian invite.`,
+      data: { guardianId: guardian._id },
+    });
+  }
+
+  await guardian.deleteOne();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Invite cancelled",
+    data: null,
+  });
+});
+
+// Re-notifies a still-pending invite that hasn't been responded to yet.
+// Doesn't touch requestedAccounts — just pushes a fresh guardian_invite so
+// there's an easy, obvious one to act on again. The client drops the
+// earlier unresponded invite for this guardianId the moment this one
+// arrives, so the protector only ever sees one live invite per person.
+export const resendGuardianInvite = catchAsync(async (req, res) => {
+  const { id } = req.params;
+
+  const guardian = await Guardian.findOne({
+    _id: id,
+    user: req.user._id,
+    status: "pending",
+  });
+  if (!guardian) {
+    throw new AppError(
+      httpStatus.NOT_FOUND,
+      "Pending guardian invite not found"
+    );
+  }
+
+  const accounts = await Account.find({
+    _id: { $in: guardian.requestedAccounts || [] },
+  });
+
+  const requesterName = userLabel(req.user);
+  const guardianRole = guardian.isPrimary ? "primary" : "secondary";
+  await createAndEmitNotification({
+    recipient: guardian.protectorUser,
+    sender: req.user._id,
+    type: "guardian_invite",
+    title: "Guardian invite",
+    body: `${requesterName} invited you to be their ${guardianRole} guardian.`,
+    data: {
+      guardianId: guardian._id,
+      requester: {
+        id: req.user._id,
+        name: req.user.name,
+        email: req.user.email,
+      },
+      accounts: accounts.map((account) => ({
+        id: account._id,
+        accountType: account.accountType,
+        bankName: account.bankName,
+      })),
+      actions: guardianInviteActions(guardian._id),
+    },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Invite resent",
+    data: { guardianId: guardian._id },
+  });
 });
 
 // Switch which guardian is primary. Only one guardian can be primary at a
@@ -358,7 +476,14 @@ export const makeGuardianPrimary = catchAsync(async (req, res) => {
   });
 });
 
-export const sendGuardianDeletionOtp = catchAsync(async (req, res) => {
+// Guardian removal now runs guardian-first, mirroring account removal: the
+// owner notifies their primary guardian, the guardian approves in-app
+// (pushing the OTP to the owner in real time over the socket + email/push),
+// and the owner enters that OTP to finish. If the guardian being removed IS
+// the current primary, they end up approving their own removal — there's no
+// other primary to ask, and it still stops the owner from unilaterally
+// dropping their primary guardian without that guardian's own confirmation.
+export const requestGuardianDeletion = catchAsync(async (req, res) => {
   const { id } = req.params;
 
   const guardian = await Guardian.findOne({ _id: id, user: req.user._id });
@@ -366,55 +491,140 @@ export const sendGuardianDeletionOtp = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, "Guardian not found");
   }
 
-  const otp = generateOTP(6);
-  guardian.deletionOtpHash = hashOtp(otp);
-  guardian.deletionOtpExpiresAt = new Date(
-    Date.now() + GUARDIAN_DELETE_OTP_WINDOW_MS
-  );
-  await guardian.save();
-
-  let emailSent = true;
-  try {
-    await sendEmail({
-      email: req.user.email,
-      subject: "Remove Guardian OTP",
-      message: `Your OTP to remove ${guardian.name} as a guardian is: ${otp}`,
-    });
-  } catch (error) {
-    emailSent = false;
-    console.error("Guardian deletion OTP email failed:", error);
+  const primaryGuardian = await findPrimaryGuardianForUser(req.user._id);
+  if (!primaryGuardian) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "A primary guardian is required to remove a guardian"
+    );
   }
 
-  // Sent at the same time as the email, not as a fallback.
-  await trySendPushNotification(
-    [req.user._id],
-    "Remove guardian OTP",
-    `Your OTP to remove ${guardian.name} is ${otp}`
+  const deletionRequest = await GuardianDeletionRequest.findOneAndUpdate(
+    {
+      guardian: guardian._id,
+      user: req.user._id,
+      status: { $in: ["notified", "otp_sent"] },
+    },
+    {
+      $set: {
+        guardian: guardian._id,
+        user: req.user._id,
+        primaryGuardian: primaryGuardian.guardian._id,
+        primaryGuardianUser: primaryGuardian.protectorUser._id,
+        otpHash: "",
+        status: "notified",
+      },
+      $unset: { otpExpiresAt: "", otpSentAt: "", verifiedAt: "" },
+    },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
   );
 
-  // In-app notification (Notifications tab / top snackbar / socket) — the
-  // email and native push above don't reach the app's own notification
-  // system, so without this the OTP never shows up there.
+  const requesterName = userLabel(req.user);
+
   await createAndEmitNotification({
-    recipient: req.user._id,
+    recipient: primaryGuardian.protectorUser._id,
     sender: req.user._id,
-    type: "guardian_deletion_otp_sent",
-    title: "Guardian removal OTP sent",
-    body: `Your OTP to remove ${guardian.name} as a guardian is ${otp}.`,
+    type: "guardian_deletion_requested",
+    title: "Guardian removal approval needed",
+    body: `${requesterName} wants to remove ${guardian.name} as a guardian and needs your approval.`,
     data: {
-      guardianId: guardian._id,
-      guardianName: guardian.name,
-      expiresAt: guardian.deletionOtpExpiresAt,
+      requestId: deletionRequest._id,
+      guardian: {
+        id: guardian._id,
+        name: guardian.name,
+        isPrimary: guardian.isPrimary,
+      },
+      requester: {
+        id: req.user._id,
+        name: req.user.name,
+        email: req.user.email,
+      },
+      actions: guardianDeletionRequestActions(guardian._id, deletionRequest._id),
     },
   });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: "OTP sent",
+    message: "Your primary guardian was notified to approve this removal",
+    data: { requestId: deletionRequest._id },
+  });
+});
+
+// Guardian-invoked. Accept both "notified" (first send) and "otp_sent"
+// (guardian re-sending) so the button keeps working on repeat taps.
+export const sendGuardianDeletionOtp = catchAsync(async (req, res) => {
+  const { id, requestId } = req.params;
+
+  const deletionRequest = await GuardianDeletionRequest.findOne({
+    _id: requestId,
+    guardian: id,
+    primaryGuardianUser: req.user._id,
+    status: { $in: ["notified", "otp_sent"] },
+  }).populate("guardian user");
+
+  if (!deletionRequest?.guardian) {
+    throw new AppError(
+      httpStatus.NOT_FOUND,
+      "No active removal request to approve for this guardian"
+    );
+  }
+
+  const otp = generateOTP(6);
+  deletionRequest.otpHash = hashOtp(otp);
+  deletionRequest.otpExpiresAt = new Date(
+    Date.now() + GUARDIAN_DELETE_OTP_WINDOW_MS
+  );
+  deletionRequest.otpSentAt = new Date();
+  deletionRequest.status = "otp_sent";
+  await deletionRequest.save();
+
+  let emailSent = true;
+  try {
+    await sendEmail({
+      email: deletionRequest.user.email,
+      subject: "Guardian Removal OTP",
+      message: `Your primary guardian approved removing ${deletionRequest.guardian.name} as a guardian. Your OTP is: ${otp}`,
+    });
+  } catch (error) {
+    emailSent = false;
+    console.error("Guardian deletion OTP email failed:", error);
+  }
+
+  await trySendPushNotification(
+    [deletionRequest.user._id],
+    "Guardian removal OTP",
+    `Your guardian removal OTP is ${otp}`
+  );
+
+  await createAndEmitNotification({
+    recipient: deletionRequest.user._id,
+    sender: req.user._id,
+    type: "guardian_deletion_otp_required",
+    title: "Guardian removal OTP sent",
+    body: `${userLabel(req.user)} approved removing ${deletionRequest.guardian.name}. Your OTP is ${otp}.`,
     data: {
-      guardianId: guardian._id,
-      expiresAt: guardian.deletionOtpExpiresAt,
+      requestId: deletionRequest._id,
+      guardian: {
+        id: deletionRequest.guardian._id,
+        name: deletionRequest.guardian.name,
+      },
+      guardianApprover: {
+        id: req.user._id,
+        name: req.user.name,
+        email: req.user.email,
+      },
+      expiresAt: deletionRequest.otpExpiresAt,
+    },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "OTP sent to the account owner",
+    data: {
+      requestId: deletionRequest._id,
+      expiresAt: deletionRequest.otpExpiresAt,
       emailSent,
       ...(process.env.NODE_ENV !== "production" ? { debugOtp: otp } : {}),
     },
@@ -422,28 +632,83 @@ export const sendGuardianDeletionOtp = catchAsync(async (req, res) => {
 });
 
 export const verifyGuardianDeletionOtp = catchAsync(async (req, res) => {
-  const { id } = req.params;
+  const { id, requestId } = req.params;
   const { otp } = req.body;
 
   if (!otp) {
     throw new AppError(httpStatus.BAD_REQUEST, "OTP is required");
   }
 
-  const guardian = await Guardian.findOne({ _id: id, user: req.user._id });
-  if (!guardian) {
-    throw new AppError(httpStatus.NOT_FOUND, "Guardian not found");
+  const deletionRequest = await GuardianDeletionRequest.findOne({
+    _id: requestId,
+    guardian: id,
+    user: req.user._id,
+    status: "otp_sent",
+  }).populate("guardian primaryGuardianUser");
+
+  if (!deletionRequest?.guardian) {
+    throw new AppError(httpStatus.NOT_FOUND, "Guardian removal request not found");
   }
 
   if (
-    !guardian.deletionOtpHash ||
-    guardian.deletionOtpHash !== hashOtp(otp) ||
-    guardian.deletionOtpExpiresAt?.getTime() < Date.now()
+    !deletionRequest.otpHash ||
+    deletionRequest.otpHash !== hashOtp(otp) ||
+    deletionRequest.otpExpiresAt?.getTime() < Date.now()
   ) {
     throw new AppError(httpStatus.BAD_REQUEST, "Invalid or expired OTP");
   }
 
+  deletionRequest.verifiedAt = new Date();
+  deletionRequest.status = "deleted";
+  await deletionRequest.save();
+
+  const guardian = deletionRequest.guardian;
+  const wasPrimary = guardian.isPrimary;
+
   await GuardianAccount.deleteMany({ guardian: guardian._id });
   await guardian.deleteOne();
+
+  // If the deleted guardian was primary and exactly one guardian remains,
+  // that guardian automatically takes over as primary rather than leaving
+  // the user with no primary guardian at all.
+  if (wasPrimary) {
+    const remainingGuardians = await Guardian.find({ user: req.user._id });
+    if (remainingGuardians.length === 1) {
+      remainingGuardians[0].isPrimary = true;
+      await remainingGuardians[0].save();
+    }
+  }
+
+  const confirmationPayload = {
+    requestId: deletionRequest._id,
+    guardian: { id: guardian._id, name: guardian.name },
+  };
+
+  await Promise.all([
+    createAndEmitNotification({
+      recipient: req.user._id,
+      sender: deletionRequest.primaryGuardianUser._id,
+      type: "guardian_deletion_completed",
+      title: "Guardian removed",
+      body: `${guardian.name} was removed as your guardian.`,
+      data: confirmationPayload,
+    }),
+    createAndEmitNotification({
+      recipient: deletionRequest.primaryGuardianUser._id,
+      sender: req.user._id,
+      type: "guardian_deletion_completed",
+      title: "Guardian removed",
+      body: `${guardian.name} was removed as ${userLabel(req.user)}'s guardian after your approval.`,
+      data: confirmationPayload,
+    }),
+  ]);
+
+  emitToUser(req.user._id, "guardian-deletion:completed", confirmationPayload);
+  emitToUser(
+    deletionRequest.primaryGuardianUser._id,
+    "guardian-deletion:completed",
+    confirmationPayload
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

@@ -46,14 +46,6 @@ const guardianSchema = new Schema(
     respondedAt: {
       type: Date,
     },
-    // Self-verify OTP the owner uses to confirm removing this guardian.
-    deletionOtpHash: {
-      type: String,
-      default: "",
-    },
-    deletionOtpExpiresAt: {
-      type: Date,
-    },
   },
   { timestamps: true }
 );
