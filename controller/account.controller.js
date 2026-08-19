@@ -599,6 +599,60 @@ export const activateEmergencyMode = catchAsync(async (req, res) => {
   });
 });
 
+// Lighter-weight than activateEmergencyMode: notifies the primary guardian
+// the same way (same notification/socket mechanism, same alert screen on
+// their end), but doesn't lock any accounts or create an EmergencySession.
+// The alert screen's "End Emergency" action stays hidden for this because
+// there's no session id in the payload for it to act on.
+export const alertGuardian = catchAsync(async (req, res) => {
+  const eventLocation = parseEmergencyLocation(req.body?.eventLocation);
+  const guardianUsers = await findAcceptedGuardianUsers(req.user._id);
+
+  if (guardianUsers.length === 0) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "No primary guardian is linked to alert"
+    );
+  }
+
+  const payload = {
+    eventLocation,
+    lastKnownLocation: eventLocation,
+    user: {
+      id: req.user._id,
+      name: req.user.name,
+      email: req.user.email,
+    },
+  };
+
+  await Promise.all(
+    guardianUsers.map(({ guardian, protectorUser }) =>
+      createAndEmitNotification({
+        recipient: protectorUser._id,
+        sender: req.user._id,
+        type: "guardian_alert",
+        title: "Guardian alert",
+        body: `${userLabel(req.user)} needs your attention.`,
+        data: {
+          ...payload,
+          guardianRole: guardian.isPrimary ? "primary" : "secondary",
+        },
+      })
+    )
+  );
+
+  guardianUsers.forEach(({ protectorUser }) =>
+    emitToUser(protectorUser._id, "guardian:alert", payload)
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Your guardian has been alerted",
+    data: payload,
+  });
+});
+
 export const sendEmergencyClearUserOtp = catchAsync(async (req, res) => {
   const session = await findActiveEmergencySession(req.user._id);
   if (!session) {

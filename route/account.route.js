@@ -5,6 +5,7 @@ import {
   getAccount,
   getEmergencyStatus,
   activateEmergencyMode,
+  alertGuardian,
   sendEmergencyClearUserOtp,
   verifyEmergencyClearUserOtp,
   clearEmergencyByPrimaryGuardian,
@@ -31,6 +32,7 @@ router.route("/")
 
 router.get("/emergency/status", getEmergencyStatus);
 router.post("/emergency/activate", activateEmergencyMode);
+router.post("/emergency/alert-guardian", alertGuardian);
 router.post("/emergency/clear/send-user-otp", sendEmergencyClearUserOtp);
 router.post("/emergency/clear/verify-user-otp", verifyEmergencyClearUserOtp);
 router.post(
