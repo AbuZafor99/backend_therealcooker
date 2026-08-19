@@ -3,6 +3,7 @@ import catchAsync from "../utils/catchAsync.js";
 import httpStatus from "http-status";
 import sendResponse from "../utils/sendResponse.js";
 import { News } from "../model/news.model.js";
+import { uploadOnCloudinary } from "../utils/commonMethod.js";
 
 // Admin: create news
 export const createNews = catchAsync(async (req, res) => {
@@ -11,12 +12,18 @@ export const createNews = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.BAD_REQUEST, "Missing required fields");
   }
 
+  let coverImage;
+  if (req.file) {
+    const result = await uploadOnCloudinary(req.file.buffer);
+    coverImage = { url: result.secure_url, public_id: result.public_id };
+  }
+
   const news = await News.create({
     title,
     category,
     description,
     author: req.user._id,
-    coverImage: req.file ? { url: `/uploads/${req.file.filename}`, public_id: req.file.filename } : undefined,
+    coverImage,
   });
 
   sendResponse(res, {
@@ -41,7 +48,8 @@ export const updateNews = catchAsync(async (req, res) => {
   if (description) news.description = description;
   if (isPublished !== undefined) news.isPublished = isPublished;
   if (req.file) {
-    news.coverImage = { url: `/uploads/${req.file.filename}`, public_id: req.file.filename };
+    const result = await uploadOnCloudinary(req.file.buffer);
+    news.coverImage = { url: result.secure_url, public_id: result.public_id };
   }
 
   await news.save();

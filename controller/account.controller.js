@@ -11,7 +11,7 @@ import { GuardianAccount } from "../model/guardianAccount.model.js";
 import { LimitIncreaseRequest } from "../model/limitIncreaseRequest.model.js";
 import { Notification } from "../model/notification.model.js";
 import { User } from "../model/user.model.js";
-import { generateOTP } from "../utils/commonMethod.js";
+import { generateOTP, uploadOnCloudinary } from "../utils/commonMethod.js";
 import { createAndEmitNotification } from "../utils/notification.js";
 import { sendEmail } from "../utils/sendEmail.js";
 import { emitToUser } from "../utils/socket.js";
@@ -19,9 +19,10 @@ import { emitToUser } from "../utils/socket.js";
 const hashOtp = (otp) => crypto.createHash("sha256").update(otp).digest("hex");
 const OTP_WINDOW_MS = 90 * 1000;
 
-const uploadedFileUrl = (req) => {
+const uploadedFileUrl = async (req) => {
   if (!req.file) return "";
-  return `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
+  const result = await uploadOnCloudinary(req.file.buffer);
+  return result.secure_url;
 };
 
 const parseLimit = (value, fieldName) => {
@@ -408,7 +409,7 @@ export const createAccount = catchAsync(async (req, res) => {
     bankName,
     nickname: nickname?.trim() || "",
     accountNumberEncrypted,
-    imageUrl: uploadedFileUrl(req),
+    imageUrl: await uploadedFileUrl(req),
   });
 
   const guardians = await Guardian.find({
