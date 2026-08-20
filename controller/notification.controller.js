@@ -1,5 +1,6 @@
 import httpStatus from "http-status";
 import AppError from "../errors/AppError.js";
+import { FCM } from "../model/fcm.model.js";
 import { Guardian } from "../model/guardian.model.js";
 import { Notification } from "../model/notification.model.js";
 import catchAsync from "../utils/catchAsync.js";
@@ -106,6 +107,46 @@ export const markAllNotificationsRead = catchAsync(async (req, res) => {
     statusCode: 200,
     success: true,
     message: "All notifications marked as read",
+    data: null,
+  });
+});
+
+export const registerFcmToken = catchAsync(async (req, res) => {
+  const { fcmToken } = req.body;
+  if (!fcmToken || typeof fcmToken !== "string") {
+    throw new AppError(httpStatus.BAD_REQUEST, "fcmToken is required");
+  }
+
+  // Matched on the token alone, not { user, fcmToken }: a device token
+  // moving to a different logged-in user (log out, log in as someone else
+  // on the same phone) must be reassigned in place, not duplicated —
+  // otherwise the previous owner would keep getting this device's pushes.
+  await FCM.findOneAndUpdate(
+    { fcmToken },
+    { user: req.user._id, fcmToken },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  sendResponse(res, {
+    statusCode: 200,
+    success: true,
+    message: "Device registered for push notifications",
+    data: null,
+  });
+});
+
+export const unregisterFcmToken = catchAsync(async (req, res) => {
+  const { fcmToken } = req.body;
+  if (!fcmToken || typeof fcmToken !== "string") {
+    throw new AppError(httpStatus.BAD_REQUEST, "fcmToken is required");
+  }
+
+  await FCM.deleteOne({ user: req.user._id, fcmToken });
+
+  sendResponse(res, {
+    statusCode: 200,
+    success: true,
+    message: "Device unregistered from push notifications",
     data: null,
   });
 });

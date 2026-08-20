@@ -6,21 +6,20 @@ import admin from "./firebase.js";
 export const sendPushNotification = async (
   userIds,
   title,
-  body
+  body,
+  // `type` + `data` mirror the in-app Notification document (see
+  // createAndEmitNotification) so the client's notificationTapHandler can
+  // route a tapped push exactly the way it routes a tapped in-app item.
+  // Callers that only need the plain alert text (e.g. an OTP code) can
+  // leave these out — the message is then sent without a `data` block,
+  // same as before.
+  { type, data } = {}
 ) => {
   try {
-    // Get users with FCM tokens
-    // const users = await User.find({
-    //   _id: { $in: userIds },
-    //   fcmToken: { $exists: true, $ne: null },
-    // }).select("fcmToken");
     const users = await FCM.find({
       user: { $in: userIds },
       fcmToken: { $exists: true, $ne: null },
     }).select("fcmToken");
-    console.log(users)
-
-    console.log(`Found ${users} users with FCM tokens for notification.`);
 
     const tokens = users
       .map((u) => u.fcmToken)
@@ -33,6 +32,11 @@ export const sendPushNotification = async (
         title,
         body,
       },
+      // FCM data payload values must all be strings — the object payload
+      // is JSON-encoded and decoded back on the client.
+      ...(type
+        ? { data: { type: String(type), payload: JSON.stringify(data || {}) } }
+        : {}),
       tokens,
     };
 
