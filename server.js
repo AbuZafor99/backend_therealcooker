@@ -43,7 +43,18 @@ app.use(
   })
 );
 
-app.use(express.json());
+// The `verify` hook stashes the raw request bytes on req.rawBody alongside
+// the normally-parsed req.body. Needed for routes that must verify an HMAC
+// signature computed over the exact bytes sent (e.g. the Dojah KYC
+// webhook) — re-serializing the parsed JSON can produce a byte-different
+// string and make a genuine signature look invalid.
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
