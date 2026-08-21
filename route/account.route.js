@@ -20,14 +20,14 @@ import {
   timeoutLimitIncreaseOtp,
 } from "../controller/account.controller.js";
 import { protect } from "../middleware/auth.middleware.js";
-import { uploadLocal } from "../middleware/multer.middleware.js";
+import { upload } from "../middleware/multer.middleware.js";
 
 const router = express.Router();
 
 router.use(protect); // All routes require authentication
 
 router.route("/")
-  .post(uploadLocal.single("image"), createAccount)
+  .post(upload.single("image"), createAccount)
   .get(getAccounts);
 
 router.get("/emergency/status", getEmergencyStatus);

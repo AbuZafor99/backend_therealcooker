@@ -47,6 +47,22 @@ const userSchema = new Schema(
     password_reset_token: { type: String, default: "" },
     fine: { type: Number, default: 0 },
     refreshToken: { type: String, default: "" },
+    kyc: {
+      status: {
+        type: String,
+        enum: ["not_started", "pending", "completed", "failed"],
+        default: "not_started",
+      },
+      // Dojah's reference_id for the most recent session — how a webhook
+      // event or a status poll is matched back to this user.
+      referenceId: { type: String, default: "" },
+      idType: { type: String, default: "" },
+      verifiedAt: { type: Date },
+      // Full last response from Dojah (createAndEmitNotification-style
+      // data blob), kept for support/debugging without needing a second
+      // round trip to Dojah to see what actually happened.
+      raw: { type: Schema.Types.Mixed },
+    },
   },
   { timestamps: true }
 );
