@@ -10,6 +10,8 @@ import {
   rejectGuardianInvite,
   resendGuardianInvite,
   makeGuardianPrimary,
+  approvePrimaryGuardianChange,
+  rejectPrimaryGuardianChange,
   requestGuardianDeletion,
   sendGuardianDeletionOtp,
   verifyGuardianDeletionOtp,
@@ -28,6 +30,14 @@ router.post("/:id/accept", acceptGuardianInvite);
 router.post("/:id/reject", rejectGuardianInvite);
 router.post("/:id/resend-invite", resendGuardianInvite);
 router.put("/:id/make-primary", makeGuardianPrimary);
+router.post(
+  "/primary-change/:requestId/approve",
+  approvePrimaryGuardianChange
+);
+router.post(
+  "/primary-change/:requestId/reject",
+  rejectPrimaryGuardianChange
+);
 router.post("/:id/delete/request", requestGuardianDeletion);
 router.post("/:id/delete/:requestId/send-otp", sendGuardianDeletionOtp);
 router.post("/:id/delete/:requestId/verify-otp", verifyGuardianDeletionOtp);

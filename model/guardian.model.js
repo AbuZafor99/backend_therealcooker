@@ -32,6 +32,14 @@ const guardianSchema = new Schema(
       type: Boolean,
       default: false,
     },
+    // Set when an existing owner selects this not-yet-connected guardian as
+    // their proposed Primary Guardian. The current Primary Guardian is only
+    // asked for approval after this invite has been accepted; until then the
+    // existing primary remains fully in place.
+    requestedPrimary: {
+      type: Boolean,
+      default: false,
+    },
     status: {
       type: String,
       enum: ["pending", "accepted"],
@@ -54,5 +62,11 @@ const guardianSchema = new Schema(
 guardianSchema.index({ user: 1 });
 guardianSchema.index({ protectorUser: 1 });
 guardianSchema.index({ user: 1, protectorUser: 1, status: 1 });
+// Defence in depth: even if two requests race, MongoDB must never persist
+// two Primary Guardians for the same owner.
+guardianSchema.index(
+  { user: 1, isPrimary: 1 },
+  { unique: true, partialFilterExpression: { isPrimary: true } }
+);
 
 export const Guardian = mongoose.model("Guardian", guardianSchema);
