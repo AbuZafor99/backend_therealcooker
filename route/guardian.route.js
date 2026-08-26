@@ -7,6 +7,7 @@ import {
   deleteGuardian,
   updateGuardianAccounts,
   acceptGuardianInvite,
+  sendReciprocalPrimaryInvite,
   rejectGuardianInvite,
   resendGuardianInvite,
   makeGuardianPrimary,
@@ -27,6 +28,10 @@ router.route("/")
   .get(getGuardians);
 
 router.post("/:id/accept", acceptGuardianInvite);
+router.post(
+  "/:id/reciprocal-primary-invite",
+  sendReciprocalPrimaryInvite
+);
 router.post("/:id/reject", rejectGuardianInvite);
 router.post("/:id/resend-invite", resendGuardianInvite);
 router.put("/:id/make-primary", makeGuardianPrimary);

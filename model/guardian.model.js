@@ -32,10 +32,12 @@ const guardianSchema = new Schema(
       type: Boolean,
       default: false,
     },
-    // Set when an existing owner selects this not-yet-connected guardian as
-    // their proposed Primary Guardian. The current Primary Guardian is only
-    // asked for approval after this invite has been accepted; until then the
-    // existing primary remains fully in place.
+    // Records that this relationship was requested as Primary. For a pending
+    // invite it drives the invite copy; after acceptance it is retained so a
+    // reciprocal-primary offer can still be authorised without trusting a
+    // client-supplied flag. The current Primary Guardian is only asked for
+    // approval after this invite has been accepted; until then the existing
+    // primary remains fully in place.
     requestedPrimary: {
       type: Boolean,
       default: false,

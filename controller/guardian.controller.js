@@ -213,11 +213,23 @@ const buildGuardianPayload = async (guardian) => {
     requestedAccounts,
     primaryChangeStatus:
       pendingPrimaryChange?.status ||
-      (guardianObject.requestedPrimary
+      (guardianObject.status === "pending" && guardianObject.requestedPrimary
         ? "awaiting_guardian_acceptance"
         : null),
   };
 };
+
+// A pending Primary invite is still a deliberate Primary selection. Treat it
+// as occupied here so accepting two reciprocal offers in quick succession can
+// never create competing Primary Guardian records.
+const hasPrimaryGuardianSelection = async (userId) =>
+  Boolean(
+    await Guardian.exists({
+      user: userId,
+      isPrimary: true,
+      status: { $in: ["pending", "accepted"] },
+    })
+  );
 
 // A protector is represented by ONE guardian record per requester, but can
 // protect many of the requester's accounts. When the same protector is linked
@@ -1237,7 +1249,7 @@ export const acceptGuardianInvite = catchAsync(async (req, res) => {
     _id: id,
     protectorUser: req.user._id,
     status: "pending",
-  }).populate("user", "name email");
+  }).populate("user", "name email phone");
 
   if (!guardian) {
     throw new AppError(httpStatus.NOT_FOUND, "Pending guardian invite not found");
@@ -1265,9 +1277,10 @@ export const acceptGuardianInvite = catchAsync(async (req, res) => {
     );
   }
 
+  const wasPrimaryRequest =
+    guardian.isPrimary === true || guardian.requestedPrimary === true;
   const shouldRequestPrimaryChange = guardian.requestedPrimary === true;
   guardian.status = "accepted";
-  guardian.requestedPrimary = false;
   guardian.requestedAccounts = accountIds;
   guardian.respondedAt = new Date();
   await guardian.save();
@@ -1324,12 +1337,194 @@ export const acceptGuardianInvite = catchAsync(async (req, res) => {
 
   const updatedGuardian = await Guardian.findById(guardian._id);
   const result = await buildGuardianPayload(updatedGuardian);
+  const reciprocalPrimaryEligible =
+    wasPrimaryRequest &&
+    !(await hasPrimaryGuardianSelection(req.user._id));
+
+  result.reciprocalPrimaryOffer = reciprocalPrimaryEligible
+    ? {
+        eligible: true,
+        requester: {
+          id: guardian.user._id,
+          name: guardian.user.name,
+          email: guardian.user.email,
+        },
+      }
+    : { eligible: false };
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Guardian invite accepted successfully",
     data: result,
+  });
+});
+
+// After accepting somebody's Primary Guardian request, an invitee with no
+// Primary Guardian of their own can choose to make the relationship mutual.
+// The accepted relationship is the authority for this action; the client does
+// not send contact details or claim that the original invite was Primary.
+export const sendReciprocalPrimaryInvite = catchAsync(async (req, res) => {
+  const { id } = req.params;
+
+  const acceptedRequest = await Guardian.findOne({
+    _id: id,
+    protectorUser: req.user._id,
+    status: "accepted",
+  }).populate("user", "name email phone");
+
+  if (!acceptedRequest) {
+    throw new AppError(
+      httpStatus.NOT_FOUND,
+      "Accepted guardian relationship not found"
+    );
+  }
+  if (!acceptedRequest.isPrimary && !acceptedRequest.requestedPrimary) {
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      "A reciprocal invite is only available for a Primary Guardian request"
+    );
+  }
+
+  const requester = acceptedRequest.user;
+  const existingPrimary = await Guardian.findOne({
+    user: req.user._id,
+    isPrimary: true,
+    status: { $in: ["pending", "accepted"] },
+  });
+  if (existingPrimary) {
+    if (String(existingPrimary.protectorUser) === String(requester._id)) {
+      sendResponse(res, {
+        statusCode: httpStatus.OK,
+        success: true,
+        message:
+          existingPrimary.status === "accepted"
+            ? `${userLabel(requester)} is already your Primary Guardian`
+            : `A Primary Guardian invite is already pending for ${userLabel(requester)}`,
+        data: await buildGuardianPayload(existingPrimary),
+      });
+      return;
+    }
+    throw new AppError(
+      httpStatus.CONFLICT,
+      "You already have a Primary Guardian or a pending Primary invite"
+    );
+  }
+
+  const activeGuardians = await Guardian.find({
+    user: req.user._id,
+    status: { $in: ["pending", "accepted"] },
+  });
+  let reciprocal = activeGuardians.find(
+    (guardian) =>
+      String(guardian.protectorUser) === String(requester._id)
+  );
+  if (!reciprocal && activeGuardians.length >= 4) {
+    throw new AppError(
+      httpStatus.CONFLICT,
+      "Guardian limit reached. Remove a Secondary Guardian before sending this invite"
+    );
+  }
+
+  const accounts = await Account.find({
+    user: req.user._id,
+    isActive: true,
+  });
+  const accountIds = accounts.map((account) => account._id);
+  const wasExisting = Boolean(reciprocal);
+  const wasAccepted = reciprocal?.status === "accepted";
+
+  try {
+    if (reciprocal) {
+      reciprocal.isPrimary = true;
+      reciprocal.requestedPrimary = false;
+      reciprocal.requestedAccounts = accountIds;
+      await reciprocal.save();
+    } else {
+      reciprocal = await Guardian.create({
+        user: req.user._id,
+        protectorUser: requester._id,
+        name: userLabel(requester),
+        email: requester.email,
+        // Phone is not required during registration, but Guardian's legacy
+        // schema requires a non-empty value. It can be completed in Profile
+        // later without blocking this consent-driven reciprocal flow.
+        phone: requester.phone || "Not provided",
+        relationship: acceptedRequest.relationship,
+        isPrimary: true,
+        requestedPrimary: false,
+        status: "pending",
+        requestedAccounts: accountIds,
+      });
+    }
+  } catch (error) {
+    if (error?.code === 11000) {
+      throw new AppError(
+        httpStatus.CONFLICT,
+        "A Primary Guardian invite was created at the same time. Refresh your Guardians list"
+      );
+    }
+    throw error;
+  }
+
+  const ownerName = userLabel(req.user);
+  try {
+    if (wasAccepted) {
+      await createAndEmitNotification({
+        recipient: requester._id,
+        sender: req.user._id,
+        type: "guardian_promoted_to_primary",
+        title: "You are now a Primary Guardian",
+        body: `You are now ${ownerName}'s Primary Guardian.`,
+        data: {
+          guardianId: reciprocal._id,
+          requester: {
+            id: req.user._id,
+            name: req.user.name,
+            email: req.user.email,
+          },
+        },
+      });
+    } else {
+      await createAndEmitNotification({
+        recipient: requester._id,
+        sender: req.user._id,
+        type: "guardian_invite",
+        title: "Primary Guardian invite",
+        body: `${ownerName} invited you to be their Primary Guardian.`,
+        data: {
+          guardianId: reciprocal._id,
+          requester: {
+            id: req.user._id,
+            name: req.user.name,
+            email: req.user.email,
+          },
+          accounts: accounts.map((account) => ({
+            id: account._id,
+            accountType: account.accountType,
+            bankName: account.bankName,
+          })),
+          actions: guardianInviteActions(reciprocal._id),
+        },
+      });
+    }
+  } catch (error) {
+    if (!wasExisting) {
+      await Guardian.deleteOne({ _id: reciprocal._id, status: "pending" });
+    } else if (!wasAccepted) {
+      reciprocal.isPrimary = false;
+      await reciprocal.save();
+    }
+    throw error;
+  }
+
+  sendResponse(res, {
+    statusCode: wasExisting ? httpStatus.OK : httpStatus.CREATED,
+    success: true,
+    message: wasAccepted
+      ? `${userLabel(requester)} is now your Primary Guardian`
+      : "Reciprocal Primary Guardian invite sent successfully",
+    data: await buildGuardianPayload(reciprocal),
   });
 });
 
