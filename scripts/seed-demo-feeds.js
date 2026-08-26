@@ -11,6 +11,10 @@ const demoFeeds = [
     description:
       "Scam messages often create urgency, use shortened links, or ask you to verify personal details. Pause before tapping, open your bank's official app independently, and contact the number printed on your bank card if anything feels unusual.",
     readTime: "3 min read",
+    coverImage: {
+      url: "/uploads/demo-feeds/fake-bank-sms.jpg",
+      public_id: "demo-feeds/fake-bank-sms",
+    },
   },
   {
     title: "What to Do When a Caller Claims to Be Your Bank",
@@ -18,6 +22,10 @@ const demoFeeds = [
     description:
       "A genuine bank representative will never pressure you to reveal an OTP, PIN, password, or full card details. End the call, wait a moment, and call your bank through its verified support number before taking any action.",
     readTime: "4 min read",
+    coverImage: {
+      url: "/uploads/demo-feeds/fake-bank-caller.jpg",
+      public_id: "demo-feeds/fake-bank-caller",
+    },
   },
   {
     title: "Safer Online Banking in Under Five Minutes",
@@ -25,6 +33,10 @@ const demoFeeds = [
     description:
       "Turn on transaction alerts, use a unique passcode, review connected devices, and keep your banking app updated. These quick checks reduce the chance that an unnoticed login becomes a financial loss.",
     readTime: "4 min read",
+    coverImage: {
+      url: "/uploads/demo-feeds/safer-online-banking.jpg",
+      public_id: "demo-feeds/safer-online-banking",
+    },
   },
   {
     title: "Never Share an OTP—even with Bank Staff",
@@ -32,6 +44,10 @@ const demoFeeds = [
     description:
       "An OTP authorizes a specific action on your account. Anyone asking you to read it aloud, forward it, or type it into an unfamiliar page may be attempting to complete a transaction in your name.",
     readTime: "2 min read",
+    coverImage: {
+      url: "/uploads/demo-feeds/protect-your-otp.jpg",
+      public_id: "demo-feeds/protect-your-otp",
+    },
   },
   {
     title: "How Money Mule Scams Recruit Through Social Media",
@@ -39,6 +55,10 @@ const demoFeeds = [
     description:
       "Offers to receive or move money for a commission can involve stolen funds. Do not let another person use your account, and report unexpected deposits or suspicious job offers to your financial institution.",
     readTime: "5 min read",
+    coverImage: {
+      url: "/uploads/demo-feeds/money-mule-social-media.jpg",
+      public_id: "demo-feeds/money-mule-social-media",
+    },
   },
 ];
 
@@ -65,7 +85,6 @@ const seedDemoFeeds = async () => {
         ...feed,
         author: author._id,
         isPublished: true,
-        coverImage: { url: "", public_id: "" },
         createdAt: new Date(now - index * 60 * 1000),
       });
     } else {
@@ -73,7 +92,6 @@ const seedDemoFeeds = async () => {
         ...feed,
         author: author._id,
         isPublished: true,
-        coverImage: { url: "", public_id: "" },
       });
     }
     await post.save();
