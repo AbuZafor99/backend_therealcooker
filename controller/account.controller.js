@@ -3,7 +3,7 @@ import catchAsync from "../utils/catchAsync.js";
 import crypto from "crypto";
 import httpStatus from "http-status";
 import sendResponse from "../utils/sendResponse.js";
-import { Account } from "../model/account.model.js";
+import { Account, BANK_ACCOUNT_TYPES } from "../model/account.model.js";
 import { AccountDeletionRequest } from "../model/accountDeletionRequest.model.js";
 import { EmergencySession } from "../model/emergencySession.model.js";
 import { recordAlert, recordEvent, resolveTrackedEmergency } from "../utils/operations.js";
@@ -72,6 +72,7 @@ const accountSummary = (account) => ({
   id: account._id,
   accountType: account.accountType,
   bankName: account.bankName,
+  bankAccountType: account.bankAccountType,
   nickname: account.nickname,
   imageUrl: account.imageUrl,
 });
@@ -412,7 +413,8 @@ const lockLimitRequest = async (limitRequest, reason) => {
 
 // Create an account (no guardian relation yet)
 export const createAccount = catchAsync(async (req, res) => {
-  const { accountType, bankName, nickname, accountNumberEncrypted } = req.body;
+  const { accountType, bankName, bankAccountType, nickname, accountNumberEncrypted } =
+    req.body;
 
   if (!accountType || !accountNumberEncrypted) {
     throw new AppError(httpStatus.BAD_REQUEST, "Missing required fields");
@@ -426,6 +428,12 @@ export const createAccount = catchAsync(async (req, res) => {
   if (accountType === "bank" && !bankName) {
     throw new AppError(httpStatus.BAD_REQUEST, "Bank name is required for bank accounts");
   }
+  if (accountType === "bank" && !BANK_ACCOUNT_TYPES.includes(bankAccountType)) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      `Bank account type is required and must be one of: ${BANK_ACCOUNT_TYPES.join(", ")}`
+    );
+  }
 
   const catalogBank = accountType === "bank"
     ? await Bank.findOne({ nameKey: String(bankName).trim().replace(/\s+/g, " ").toLocaleLowerCase("en"), isActive: true })
@@ -438,6 +446,7 @@ export const createAccount = catchAsync(async (req, res) => {
     user: req.user._id,
     accountType,
     bankName: catalogBank?.name || bankName,
+    ...(accountType === "bank" && { bankAccountType }),
     nickname: nickname?.trim() || "",
     accountNumberEncrypted,
     imageUrl: (await uploadedFileUrl(req)) || catalogBank?.logo.url || "",
@@ -1015,8 +1024,14 @@ export const getAccount = catchAsync(async (req, res) => {
 // Update account (only certain fields)
 export const updateAccount = catchAsync(async (req, res) => {
   const { id } = req.params;
-  const { accountType, bankName, nickname, accountNumberEncrypted, isActive } =
-    req.body;
+  const {
+    accountType,
+    bankName,
+    bankAccountType,
+    nickname,
+    accountNumberEncrypted,
+    isActive,
+  } = req.body;
 
   const account = await Account.findOne({ _id: id, user: req.user._id });
   if (!account) {
@@ -1031,6 +1046,15 @@ export const updateAccount = catchAsync(async (req, res) => {
     account.bankName = catalogBank.name;
     if (!account.imageUrl) account.imageUrl = catalogBank.logo.url;
   } else if (bankName) account.bankName = bankName;
+  if (bankAccountType !== undefined) {
+    if (!BANK_ACCOUNT_TYPES.includes(bankAccountType)) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        `Bank account type must be one of: ${BANK_ACCOUNT_TYPES.join(", ")}`
+      );
+    }
+    account.bankAccountType = bankAccountType;
+  }
   if (nickname !== undefined) account.nickname = nickname?.trim() || "";
   if (accountNumberEncrypted) {
     if (!/^\d{7,}$/.test(String(accountNumberEncrypted).trim())) {

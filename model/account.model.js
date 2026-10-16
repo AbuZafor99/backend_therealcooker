@@ -1,5 +1,7 @@
 import mongoose, { Schema } from "mongoose";
 
+export const BANK_ACCOUNT_TYPES = ["cheque", "savings", "transmission", "credit"];
+
 const accountSchema = new Schema(
   {
     user: {
@@ -17,6 +19,12 @@ const accountSchema = new Schema(
       required: function () {
         return this.accountType === "bank";
       },
+    },
+    // Required for new bank accounts in createAccount; not enforced at the
+    // schema level so bank accounts linked before this field existed still save.
+    bankAccountType: {
+      type: String,
+      enum: BANK_ACCOUNT_TYPES,
     },
     nickname: {
       type: String,
