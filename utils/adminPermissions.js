@@ -13,6 +13,7 @@ export function routePermission(req) {
   let section = "users";
   if (/\/admin\/me$/.test(path)) return "overview:read";
   if (/\/dashboard\//.test(path)) section = path.endsWith("recent-users") ? "users" : "overview";
+  else if (/\/analytics\//.test(path)) section = "overview";
   else if (/\/staff/.test(path)) return "staff:write";
   else if (/\/audit/.test(path)) return "audit:read";
   else if (/\/alerts/.test(path)) section = "alerts";

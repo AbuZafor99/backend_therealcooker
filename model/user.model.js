@@ -63,6 +63,9 @@ const userSchema = new Schema(
       referenceId: { type: String, default: "" },
       idType: { type: String, default: "" },
       verifiedAt: { type: Date },
+      // First time Dojah reported a submission for the current referenceId;
+      // feeds the admin KYC queue. Unset on records submitted before it existed.
+      submittedAt: { type: Date },
       // Full last response from Dojah (createAndEmitNotification-style
       // data blob), kept for support/debugging without needing a second
       // round trip to Dojah to see what actually happened.

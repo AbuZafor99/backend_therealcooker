@@ -665,7 +665,8 @@ export const alertGuardian = catchAsync(async (req, res) => {
     );
   }
 
-  await recordAlert({ key: `guardian:${liveLocationShareId}`, type: "guardian_alert", severity: "high", title: "User requested guardian attention", user: req.user._id, entityId: liveLocationShareId });
+  // A guardian panic is classified Elevated (SOS activations are Critical).
+  await recordAlert({ key: `guardian:${liveLocationShareId}`, type: "guardian_alert", severity: "elevated", title: "User requested guardian attention", user: req.user._id, entityId: liveLocationShareId });
   await recordEvent({ kind: "panic", user: req.user._id, actor: req.user._id, entityType: "guardian_alert", entityId: liveLocationShareId, outcome: "guardian_alert" });
 
   const payload = {

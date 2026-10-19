@@ -225,7 +225,7 @@ export const getUsersForAdmin = catchAsync(async (req, res) => {
   const filter = { role: "user", ...dateFilter(req.query) };
   if (req.query.user) filter._id = req.query.user;
   if (req.query.verified === "true") filter["verificationInfo.verified"] = true;
-  if (req.query.kyc === "completed") filter["kyc.status"] = "completed";
+  if (["not_started", "pending", "completed", "failed"].includes(req.query.kyc)) filter["kyc.status"] = req.query.kyc;
   if (req.query.bank || req.query.linked === "true") {
     filter._id = { $in: await Account.distinct("user", { isActive: true, ...(req.query.bank ? { bankName: req.query.bank } : { accountType: "bank" }) }) };
   }

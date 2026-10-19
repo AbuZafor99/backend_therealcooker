@@ -1,6 +1,9 @@
 import { Notification } from "../model/notification.model.js";
 import { emitToUser } from "./socket.js";
 
+// Emergency notifications that reach a guardian (as opposed to the user's own copy).
+export const GUARDIAN_ALERT_TYPES = ["guardian_alert", "sos_emergency_active"];
+
 export const createAndEmitNotification = async ({
   recipient,
   sender,
@@ -33,7 +36,8 @@ export const createAndEmitNotification = async ({
   // instead of just silently skipping the push.
   try {
     const { sendPushNotification } = await import("./sendPushNotification.js");
-    await sendPushNotification([recipient], title, body, { type, data });
+    const category = GUARDIAN_ALERT_TYPES.includes(type) && sender && String(sender) !== String(recipient) ? "guardian_alert" : "general";
+    await sendPushNotification([recipient], title, body, { type, data, category });
   } catch (error) {
     console.error("Push notification skipped:", error);
   }

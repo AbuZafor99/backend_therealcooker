@@ -52,10 +52,38 @@ export const AuditLog = mongoose.model("AuditLog", audit);
 
 const availability = new Schema({
   service: { type: String, required: true }, available: Boolean, latencyMs: Number,
+  // Local and deployed backends can share one database; uptime coverage is reported per environment.
+  environment: String,
+  // Short error code from a failed check (never a response body or credential).
+  error: String,
   checkedAt: { type: Date, default: Date.now },
 }, { timestamps: true });
 availability.index({ service: 1, checkedAt: -1 });
 export const AvailabilitySample = mongoose.model("AvailabilitySample", availability);
+
+// Hourly counters of outbound integration calls made during normal operation (one $inc per call).
+// "accepted" means the provider accepted the request, not that a device received it.
+const integrationMetric = new Schema({
+  service: { type: String, required: true }, category: { type: String, default: "general" }, hour: { type: Date, required: true },
+  attempts: { type: Number, default: 0 }, accepted: { type: Number, default: 0 }, failed: { type: Number, default: 0 }, noDevice: { type: Number, default: 0 }, serviceErrors: { type: Number, default: 0 },
+  lastSuccessAt: Date, lastFailureAt: Date, lastError: String,
+}, { timestamps: true });
+integrationMetric.index({ service: 1, category: 1, hour: 1 }, { unique: true });
+integrationMetric.index({ hour: 1 }, { expireAfterSeconds: 400 * 86_400 });
+export const IntegrationMetric = mongoose.model("IntegrationMetric", integrationMetric);
+
+// One sample a minute from each running backend instance; expires after 35 days.
+const serverMetric = new Schema({
+  environment: String, checkedAt: { type: Date, required: true },
+  host: { cpuPercent: Number, cores: Number, loadAverage: Number, memoryTotal: Number, memoryFree: Number, uptimeSeconds: Number },
+  container: { memoryLimit: Number, memoryUsage: Number },
+  process: { cpuPercent: Number, rss: Number, heapUsed: Number, uptimeSeconds: Number },
+  disk: { total: Number, free: Number },
+  gpus: [{ _id: false, name: String, utilizationPercent: Number, memoryUsed: Number, memoryTotal: Number }],
+}, { versionKey: false });
+serverMetric.index({ environment: 1, checkedAt: -1 });
+serverMetric.index({ checkedAt: 1 }, { expireAfterSeconds: 35 * 86_400 });
+export const ServerMetricSample = mongoose.model("ServerMetricSample", serverMetric);
 
 const progress = new Schema({
   user: { ...ref("User"), required: true }, learning: { ...ref("Learning"), required: true },

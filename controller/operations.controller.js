@@ -210,3 +210,4 @@ export const getHealth = catchAsync(async (req, res) => {
   ]);
   respond(res, { generatedAt: new Date(), services: services.map(s => ({ service: s._id, samples: s.samples, uptime: percent(s.healthy, s.samples), available: s.available, checkedAt: s.checkedAt, latencyMs: s.latencyMs })), trends: trends.map(s => ({ service: s._id.service, date: s._id.date, uptime: percent(s.healthy, s.samples) })), measurement: "In-process samples; use an external uptime monitor to capture process outages." });
 });
+

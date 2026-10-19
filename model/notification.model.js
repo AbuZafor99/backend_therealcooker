@@ -40,5 +40,7 @@ const notificationSchema = new Schema(
 );
 
 notificationSchema.index({ recipient: 1, createdAt: -1 });
+// Admin reporting counts emergency notifications by type and date.
+notificationSchema.index({ type: 1, createdAt: 1 });
 
 export const Notification = mongoose.model("Notification", notificationSchema);

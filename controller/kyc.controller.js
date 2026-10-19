@@ -50,6 +50,7 @@ export const createKycSession = catchAsync(async (req, res) => {
   user.kyc.status = "not_started";
   user.kyc.referenceId = referenceId;
   user.kyc.verifiedAt = undefined;
+  user.kyc.submittedAt = undefined;
   await user.save();
 
   sendResponse(res, {
@@ -103,6 +104,7 @@ export const getKycStatus = catchAsync(async (req, res) => {
         user.kyc.status = status;
         user.kyc.idType = verification.id_type || user.kyc.idType;
         user.kyc.raw = verification;
+        if (status !== "not_started") user.kyc.submittedAt ||= new Date();
         if (status === "completed") user.kyc.verifiedAt = new Date();
         await user.save();
       }
@@ -154,6 +156,7 @@ export const dojahWebhook = catchAsync(async (req, res) => {
     user.kyc.status = status;
     user.kyc.idType = payload.id_type || user.kyc.idType;
     user.kyc.raw = payload;
+    if (status !== "not_started") user.kyc.submittedAt ||= new Date();
     if (status === "completed") user.kyc.verifiedAt = new Date();
     await user.save();
   }
