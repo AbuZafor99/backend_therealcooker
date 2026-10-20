@@ -1,6 +1,8 @@
 import { User } from "../model/user.model.js";
 import { Account } from "../model/account.model.js";
 import { Notification } from "../model/notification.model.js";
+import { Learning } from "../model/learning.model.js";
+import { LearningAttempt } from "../model/learning-attempt.model.js";
 import { SecurityAlert, OperationEvent, AvailabilitySample, IntegrationMetric, LearningProgress, ServerMetricSample } from "../model/operation.model.js";
 import { percent } from "./reporting.js";
 import { GUARDIAN_ALERT_TYPES } from "./notification.js";
@@ -107,12 +109,37 @@ export async function userActivity(range) {
   return { active, new: created, kycSubmitted, kycCompleted, accountsLinked: byKey(linked, ["bank", "wallet"]) };
 }
 
-export async function learningActivity(range) {
-  const [started, [completed]] = await Promise.all([
-    LearningProgress.countDocuments({ startedAt: between(range) }),
-    LearningProgress.aggregate([{ $match: { completedAt: between(range) } }, { $group: { _id: null, count: { $sum: 1 }, averageMs: { $avg: "$durationMs" } } }]),
+// Learning is counted per user per module. A module is "opened" when the user loads it in the app
+// (or, before open tracking existed, started its quiz) and "completed" once they submit its quiz.
+// Opened but never submitted counts as not completed. Without a range the figures are all-time.
+export async function learningOverview(range) {
+  const within = field => range ? { [field]: between(range) } : {};
+  const pairs = (Model, match, userField = "$user", learningField = { $toString: "$learning" }) => Model.aggregate([{ $match: match }, { $group: { _id: { user: { $toString: userField }, learning: learningField } } }]);
+  const [opened, quizStarted, submitted, opens, [firstOpen]] = await Promise.all([
+    pairs(OperationEvent, { kind: "learning_opened", user: { $ne: null }, ...within("occurredAt") }, "$user", "$entityId"),
+    pairs(LearningProgress, within("startedAt")),
+    pairs(LearningAttempt, within("createdAt")),
+    // Every opening counts here, including ones from signed-out sessions.
+    OperationEvent.aggregate([{ $match: { kind: "learning_opened", ...within("occurredAt") } }, { $group: { _id: "$entityId", opens: { $sum: 1 } } }]),
+    OperationEvent.find({ kind: "learning_opened" }).sort({ occurredAt: 1 }).limit(1).select("occurredAt").lean(),
   ]);
-  return { started, completed: completed?.count || 0, averageDurationMs: completed?.averageMs ?? null };
+  const key = row => `${row._id.user}:${row._id.learning}`;
+  const completed = new Set(submitted.map(key));
+  const engaged = new Set([...opened, ...quizStarted, ...submitted].map(key));
+  const notCompleted = [...engaged].filter(pair => !completed.has(pair)).length;
+
+  // Most popular: the module most users completed; ties go to the one opened most often.
+  const byModule = new Map();
+  for (const row of submitted) byModule.set(row._id.learning, { completions: (byModule.get(row._id.learning)?.completions || 0) + 1, opens: 0 });
+  for (const row of opens) if (row._id) byModule.set(row._id, { completions: byModule.get(row._id)?.completions || 0, opens: row.opens });
+  const [topId, top] = [...byModule].sort(([, a], [, b]) => b.completions - a.completions || b.opens - a.opens)[0] || [];
+  const topModule = topId && /^[0-9a-f]{24}$/.test(topId) ? await Learning.findById(topId).select("title").lean() : null;
+
+  return {
+    opened: engaged.size, completed: completed.size, notCompleted, completionRate: ratio(completed.size, engaged.size),
+    mostPopular: top ? { title: topModule?.title || null, completions: top.completions, opens: top.opens } : null,
+    openTrackingSince: firstOpen?.occurredAt || null,
+  };
 }
 
 // Daily totals for each local calendar day in `days`.
@@ -130,8 +157,8 @@ export async function dailySeries(range, days, zone) {
   return days.map(date => ({ date, activeUsers: value(active, date), newUsers: value(created, date), incidents: value(incidents, date), fraudAlerts: value(fraud, date), searches: value(lookups, date) }));
 }
 
-// Platform services. States: monitored (has checks), collecting (too little data yet), not_configured,
-// not_integrated (the backend never calls it) or not_monitored (used only by the mobile app).
+// Platform services the backend can actually check. States: monitored (has checks), collecting (too
+// little data yet) or not_configured. Integrations added later appear once they have health checks.
 const SERVICE_LABELS = { database: () => isAtlas() ? "MongoDB Atlas" : "MongoDB", verifier: () => "Verifier DB", fcm: () => "Firebase FCM" };
 export async function platformServices(range, now = new Date()) {
   // The current minute may not have been sampled yet, so API coverage stops before it.
@@ -161,8 +188,6 @@ export async function platformServices(range, now = new Date()) {
     { service: "fcm", label: "Firebase FCM", method: "Dry-run message validated by FCM every 15 minutes (nothing is delivered)",
       ...(!firebase ? { state: "not_configured", detail: "Firebase credentials are not available to this backend instance." } : check("fcm") ? { state: "monitored", ...check("fcm") } : { state: "collecting", percent: null }),
       traffic: fcmTraffic[0] ? { attempts: fcmTraffic[0].attempts, accepted: fcmTraffic[0].accepted, failed: fcmTraffic[0].failed, serviceErrors: fcmTraffic[0].serviceErrors, lastSuccessAt: fcmTraffic[0].lastSuccessAt, lastFailureAt: fcmTraffic[0].lastFailureAt, lastError: fcmTraffic[0].lastError || null } : null },
-    { service: "sms", label: "Africa's Talking SMS", state: "not_integrated", detail: "The backend has no SMS integration; nothing to monitor." },
-    { service: "maps", label: "Maps", state: "not_monitored", detail: "Maps is used only inside the mobile app; the backend makes no Maps requests." },
     ...checks.filter(row => !["database", "verifier", "fcm"].includes(row._id)).map(row => ({ service: row._id, label: row._id, method: "Configured health URL", state: "monitored", ...check(row._id) })),
   ];
   return services;

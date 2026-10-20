@@ -7,13 +7,14 @@ import {
   updateVerification,
   uploadVerificationCSV,
 } from "../controller/verification.controller.js";
-import { protect, isAdmin } from "../middleware/auth.middleware.js";
+import { protect, isAdmin, optionalAuth } from "../middleware/auth.middleware.js";
 import { uploadCSVFile } from "../middleware/multer.middleware.js";
 
 const router = express.Router();
 
 // Public lookup must be registered before the admin middleware.
-router.post("/check", checkVerification);
+// Public lookup; a signed-in user is recorded with the search when the app sends its token.
+router.post("/check", optionalAuth, checkVerification);
 
 // Management routes can only be used by admins.
 router.use(protect);

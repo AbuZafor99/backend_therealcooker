@@ -1,5 +1,5 @@
 import { reportingTimezone, reportingPeriod, previousPeriod, periodDays } from "./reportingPeriods.js";
-import { activeIncidents, incidentActivity, guardianAlerts, fraudAlertCount, fraudAlertBreakdown, alertQuality, searches, userActivity, learningActivity, dailySeries, platformServices, serverSummary } from "./dashboardMetrics.js";
+import { activeIncidents, incidentActivity, guardianAlerts, fraudAlertCount, fraudAlertBreakdown, alertQuality, searches, userActivity, learningOverview, dailySeries, platformServices, serverSummary } from "./dashboardMetrics.js";
 import { databaseMetrics } from "./databaseMetrics.js";
 import { gpuStatus, hostDescription } from "./serverMetrics.js";
 import { sampleEnvironment } from "./availability.js";
@@ -16,7 +16,7 @@ export async function buildAnalyticsReport({ period = "week", date } = {}, now =
     search, previousSearch, users, previousUsers, learning, daily, services, server, database] = await Promise.all([
     activeIncidents(), incidentActivity(range), incidentActivity(before), guardianAlerts(range), guardianAlerts(before),
     fraudAlertCount(range), fraudAlertCount(before), fraudAlertBreakdown(range), alertQuality(range), alertQuality(before),
-    searches(range), searches(before), userActivity(range), userActivity(before), learningActivity(range),
+    searches(range), searches(before), userActivity(range), userActivity(before), learningOverview(range),
     dailySeries(range, periodDays(current, now), zone), platformServices(range, now), serverSummary(range),
     databaseMetrics().catch(() => null),
   ]);
@@ -27,6 +27,7 @@ export async function buildAnalyticsReport({ period = "week", date } = {}, now =
     guardian.push.trackedSince ? `Push delivery results are recorded from ${guardian.push.trackedSince.toISOString().slice(0, 10)}; FCM "accepted" means FCM took the message, not that a device displayed it.` : "Push delivery results have not been recorded yet.",
     server.since ? `Server performance is measured from ${server.since.toISOString().slice(0, 10)} for the ${sampleEnvironment()} environment.` : "No server performance samples exist for this period.",
     "KYC submission times exist only for submissions made after submission tracking was added.",
+    learning.openTrackingSince ? `Learning module openings are recorded from ${learning.openTrackingSince.toISOString().slice(0, 10)}; earlier, a module counted as opened only once its quiz was started.` : "Learning module openings have not been recorded yet; a module counts as opened once its quiz is started.",
     "Active users are counted per UTC day (one activity marker per user per day).",
   ];
 

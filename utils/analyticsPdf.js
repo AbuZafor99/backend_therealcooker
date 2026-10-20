@@ -136,8 +136,11 @@ export function renderAnalyticsPdf(report) {
 
   heading("Learning");
   table([{ label: "Metric", width: 0.7 }, { label: "This period", width: 0.3, align: "right" }], [
-    ["Modules started", number(learning.started)], ["Modules completed", number(learning.completed)], ["Average completion time", duration(learning.averageDurationMs)],
+    ["Modules opened (per user)", number(learning.opened)], ["Modules completed (quiz submitted)", number(learning.completed)],
+    ["Modules not completed", number(learning.notCompleted)], ["Completion rate", pct(learning.completionRate)],
+    ["Most popular module", learning.mostPopular?.title || "—"],
   ]);
+  note("A module counts once per user. It is completed when that user submits its quiz; opened without a submitted quiz counts as not completed.");
 
   // Daily chart: grouped bars per day, scaled to the period's largest value.
   heading("Daily activity");
@@ -164,7 +167,7 @@ export function renderAnalyticsPdf(report) {
     report.daily.map(day => [day.date, number(day.activeUsers), number(day.newUsers), number(day.incidents), number(day.fraudAlerts), number(day.searches)]));
 
   heading("Platform services");
-  const stateLabel = { monitored: "Monitored", collecting: "Collecting data", not_configured: "Not configured", not_integrated: "Not integrated", not_monitored: "Not monitored" };
+  const stateLabel = { monitored: "Monitored", collecting: "Collecting data", not_configured: "Not configured" };
   table([{ label: "Service", width: 0.26 }, { label: "Status", width: 0.18 }, { label: "Availability", width: 0.16, align: "right" }, { label: "How it is measured", width: 0.4 }],
     report.services.map(service => [service.label, stateLabel[service.state] || service.state, service.percent == null ? "—" : `${service.percent}%`, service.method || service.detail || ""]));
 
@@ -177,7 +180,7 @@ export function renderAnalyticsPdf(report) {
       ["Host CPU — average / peak", `${pct(server.period.averageCpuPercent)} / ${pct(server.period.peakCpuPercent)}`],
       ["Host memory used — average / peak", `${pct(server.period.averageMemoryPercent)} / ${pct(server.period.peakMemoryPercent)}`],
       ["API process memory (RSS) — average", bytes(server.period.averageProcessRss)],
-      ["GPU", server.gpuStatus === "available" ? "Monitored" : "Not available on this host"],
+      ...(server.gpuStatus === "available" ? [["GPU", "Monitored"]] : []),
     ]);
     note(`Samples from ${stamp(server.period.since, zone)}. Host figures cover the whole machine running the API; the process figure is the API alone.`);
   } else note("No server performance samples were recorded for this period.");
@@ -192,10 +195,10 @@ export function renderAnalyticsPdf(report) {
       ["Storage used on disk (compressed)", bytes(database.storageSize)],
       ["Index size", bytes(database.indexSize)],
       ["Documents / collections", `${number(database.objects)} / ${number(database.collections)}`],
-      ["Cluster disk capacity", database.filesystem ? `${bytes(database.filesystem.used)} of ${bytes(database.filesystem.total)}` : "Not reported by this cluster tier"],
-      ["Database server memory", database.memory ? bytes(database.memory.residentBytes) : "Not available"],
+      // Only figures this cluster tier reports.
+      ...(database.filesystem ? [["Cluster disk capacity", `${bytes(database.filesystem.used)} of ${bytes(database.filesystem.total)}`]] : []),
+      ...(database.memory ? [["Database server memory", bytes(database.memory.residentBytes)]] : []),
     ]);
-    if (!database.memory) note(database.memoryUnavailableReason);
   } else note("Database statistics could not be read when this report was generated.");
 
   heading("Notes and limitations");

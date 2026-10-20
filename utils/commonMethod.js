@@ -37,6 +37,13 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+// Best-effort removal of an uploaded file; a failure is logged, never thrown.
+export const deleteFromCloudinary = async (publicId) => {
+  if (!publicId) return;
+  try { await cloudinary.uploader.destroy(publicId); }
+  catch (error) { console.error("Cloudinary delete error:", error?.message || error); }
+};
+
 export const uploadOnCloudinary = (fileBuffer, options = {}) => {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(

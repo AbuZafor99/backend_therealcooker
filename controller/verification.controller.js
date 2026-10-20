@@ -4,6 +4,7 @@ import httpStatus from "http-status";
 import sendResponse from "../utils/sendResponse.js";
 import { Verification } from "../model/verification.model.js";
 import { recordEvent } from "../utils/operations.js";
+import { maskSearchValue } from "../utils/maskSearchValue.js";
 
 const LOOKUP_TYPES = new Set(["email", "phone", "account", "website"]);
 const VERIFIED_STATUSES = new Set([
@@ -184,7 +185,7 @@ export const checkVerification = catchAsync(async (req, res) => {
     .lean();
 
   if (!record) {
-    await recordEvent({ kind: "verification_lookup", tool: type, outcome: "not_found", source: "moneykee" });
+    await recordEvent({ kind: "verification_lookup", tool: type, outcome: "not_found", source: "moneykee", user: req.user?._id, maskedValue: maskSearchValue(type, normalizedValue) });
     const message =
       "No record found for this information in our database. Exercise caution.";
     return res.status(httpStatus.OK).json({
@@ -202,7 +203,7 @@ export const checkVerification = catchAsync(async (req, res) => {
   }
 
   const status = normalizeVerificationStatus(record.status);
-  await recordEvent({ kind: "verification_lookup", tool: type, outcome: status, source: "moneykee", entityType: "verification", entityId: String(record._id) });
+  await recordEvent({ kind: "verification_lookup", tool: type, outcome: status, source: "moneykee", entityType: "verification", entityId: String(record._id), user: req.user?._id, maskedValue: maskSearchValue(type, normalizedValue) });
   const message =
     status === "verified"
       ? "This entity is verified."

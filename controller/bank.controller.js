@@ -3,7 +3,8 @@ import AppError from "../errors/AppError.js";
 import catchAsync from "../utils/catchAsync.js";
 import sendResponse from "../utils/sendResponse.js";
 import { Bank } from "../model/bank.model.js";
-import { uploadOnCloudinary } from "../utils/commonMethod.js";
+import { uploadOnCloudinary, deleteFromCloudinary } from "../utils/commonMethod.js";
+import { Account } from "../model/account.model.js";
 
 const reply = (res, data, message, statusCode = 200) => sendResponse(res, { statusCode, success: true, message, data });
 const normalizeName = value => typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
@@ -68,4 +69,15 @@ export const updateBank = catchAsync(async (req, res) => {
   }
   await bank.save();
   reply(res, bank, "Bank updated");
+});
+
+// Removes a bank from the catalog so it can no longer be chosen in the app. Accounts already linked
+// to it keep their bank name; the logo file is removed from Cloudinary afterwards.
+export const deleteBank = catchAsync(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) throw new AppError(400, "Invalid bank ID");
+  const bank = await Bank.findByIdAndDelete(req.params.id);
+  if (!bank) throw new AppError(404, "Bank not found");
+  const linkedAccounts = await Account.countDocuments({ bankName: bank.name });
+  await deleteFromCloudinary(bank.logo?.publicId);
+  sendResponse(res, { statusCode: 200, success: true, message: "Bank deleted successfully", data: { id: bank._id, name: bank.name, linkedAccounts } });
 });

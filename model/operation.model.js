@@ -7,6 +7,8 @@ const event = new Schema({
   source: { type: String, default: "moneykee" },
   entityType: String, entityId: String,
   outcome: String, tool: String, reason: String,
+  // Verifier searches only: the searched value with most characters hidden (see maskSearchValue).
+  maskedValue: String,
   occurredAt: { type: Date, default: Date.now, index: true },
 }, { timestamps: true });
 event.index({ kind: 1, occurredAt: -1 });

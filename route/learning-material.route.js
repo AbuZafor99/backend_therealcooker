@@ -1,5 +1,5 @@
 import express from "express";
-import { protect } from "../middleware/auth.middleware.js";
+import { protect, optionalAuth } from "../middleware/auth.middleware.js";
 import { getQuiz, submitAttempt, getMyAttempts } from "../controller/learning-attempt.controller.js";
 
 import {
@@ -13,6 +13,7 @@ router.get("/", getPublishedLearnings);
 router.get("/:id/quiz", protect, getQuiz);
 router.post("/:id/attempts", protect, submitAttempt);
 router.get("/:id/attempts/me", protect, getMyAttempts);
-router.get("/:id", getPublishedLearningById);
+// Public; a signed-in reader is attributed so module openings can be counted per user.
+router.get("/:id", optionalAuth, getPublishedLearningById);
 
 export default router;

@@ -9,7 +9,7 @@ import {
 import { protect, isAdmin } from "../middleware/auth.middleware.js";
 import { getOverview, getAdminIdentity, listAlerts, updateAlert, listCases, createCase, updateCase, listEvents, listAudit, listAccounts, getOperationalUser, listOperators, listStaff, updateStaffRole, getHealth } from "../controller/operations.controller.js";
 import { getDashboardStatus, getExecutiveDashboard, getInfrastructure, getAnalyticsReport, getAnalyticsPdf } from "../controller/dashboard.controller.js";
-import { listAdminBanks, createBank, updateBank } from "../controller/bank.controller.js";
+import { listAdminBanks, createBank, updateBank, deleteBank } from "../controller/bank.controller.js";
 import { upload } from "../middleware/multer.middleware.js";
 
 const router = express.Router();
@@ -19,6 +19,7 @@ router.get("/me", getAdminIdentity);
 router.get("/banks", listAdminBanks);
 router.post("/banks", upload.single("logo"), createBank);
 router.patch("/banks/:id", upload.single("logo"), updateBank);
+router.delete("/banks/:id", deleteBank);
 router.get("/dashboard/overview", getOverview);
 router.get("/dashboard/status", getDashboardStatus);
 router.get("/dashboard/executive", getExecutiveDashboard);

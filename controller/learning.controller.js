@@ -5,6 +5,7 @@ import sendResponse from "../utils/sendResponse.js";
 import { Learning } from "../model/learning.model.js";
 import { uploadOnCloudinary } from "../utils/commonMethod.js";
 import { normalizeQuestions } from "../utils/learningQuiz.js";
+import { recordEvent } from "../utils/operations.js";
 
 // Admin: Create learning item
 export const createLearning = catchAsync(async (req, res) => {
@@ -216,6 +217,9 @@ export const getPublishedLearningById = catchAsync(async (req, res) => {
   if (!learning) {
     throw new AppError(httpStatus.NOT_FOUND, "Learning material not found");
   }
+
+  // Opening a module in the app loads it here; record it for learning analytics without delaying the reply.
+  void recordEvent({ kind: "learning_opened", user: req.user?._id, entityType: "learning", entityId: String(learning._id) });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

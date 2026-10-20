@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import httpStatus from "http-status";
 import { User } from "../model/user.model.js";
 import { uploadOnCloudinary } from "../utils/commonMethod.js";
@@ -6,6 +7,7 @@ import sendResponse from "../utils/sendResponse.js";
 import catchAsync from "../utils/catchAsync.js";
 import { Account } from "../model/account.model.js";
 import { dateFilter, escapeRegex, pageOptions } from "../utils/reporting.js";
+import { deleteUserData } from "../utils/deleteUserData.js";
 
 const parsePagination = (query) => {
   const page = Math.max(Number(query.page) || 1, 1);
@@ -359,19 +361,14 @@ export const updateUserByAdmin = catchAsync(async (req, res) => {
 
 export const deleteUserByAdmin = catchAsync(async (req, res) => {
   const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) throw new AppError(httpStatus.BAD_REQUEST, "Invalid user ID");
 
-  const user = await User.findOne({ _id: id, role: "user" });
-
-  if (!user) {
-    throw new AppError(httpStatus.NOT_FOUND, "User not found");
-  }
-
-  await User.findOneAndDelete({ _id: id, role: "user" });
+  const removed = await deleteUserData(id);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "User deleted successfully",
-    data: null,
+    data: { removed },
   });
 });

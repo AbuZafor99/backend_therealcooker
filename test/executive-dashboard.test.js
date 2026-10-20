@@ -5,6 +5,9 @@ import { Account } from "../model/account.model.js";
 import { Notification } from "../model/notification.model.js";
 import { EmergencySession } from "../model/emergencySession.model.js";
 import { SecurityAlert, OperationEvent, AvailabilitySample, LearningProgress, IntegrationMetric, ServerMetricSample } from "../model/operation.model.js";
+import { LearningAttempt } from "../model/learning-attempt.model.js";
+import { Learning } from "../model/learning.model.js";
+import { learningOverview } from "../utils/dashboardMetrics.js";
 import { getExecutiveDashboard, getDashboardStatus, getAnalyticsReport, getAnalyticsPdf } from "../controller/dashboard.controller.js";
 import { buildAnalyticsReport } from "../utils/analyticsReport.js";
 import { renderAnalyticsPdf } from "../utils/analyticsPdf.js";
@@ -20,10 +23,10 @@ const chain = value => ({ sort() { return this; }, limit() { return this; }, sel
 function stubAll(stubs = []) {
   const restore = [];
   const stub = (model, method, fn) => { const original = model[method]; model[method] = fn; restore.push(() => { model[method] = original; }); };
-  for (const model of [User, Account, Notification, SecurityAlert, OperationEvent, AvailabilitySample, LearningProgress, IntegrationMetric, ServerMetricSample]) stub(model, "aggregate", async () => []);
+  for (const model of [User, Account, Notification, SecurityAlert, OperationEvent, AvailabilitySample, LearningProgress, LearningAttempt, IntegrationMetric, ServerMetricSample]) stub(model, "aggregate", async () => []);
   for (const model of [User, SecurityAlert, OperationEvent, LearningProgress]) stub(model, "countDocuments", async () => 0);
   for (const model of [Account, OperationEvent]) stub(model, "distinct", async () => []);
-  for (const model of [User, SecurityAlert, EmergencySession, IntegrationMetric, ServerMetricSample]) stub(model, "find", () => chain([]));
+  for (const model of [User, SecurityAlert, EmergencySession, IntegrationMetric, ServerMetricSample, OperationEvent]) stub(model, "find", () => chain([]));
   for (const [model, method, fn] of stubs) stub(model, method, fn);
   return () => restore.reverse().forEach(fn => fn());
 }
@@ -34,13 +37,13 @@ test("empty data reports unknown ratios instead of zero and hides people from an
   try {
     const data = await call(getExecutiveDashboard, "analyst");
     assert.equal(data.feed, null); assert.equal(data.kyc.recent, null);
-    assert.equal(data.security.falsePositive.rate, null); assert.equal(data.security.response.averageMs, null);
+    assert.deepEqual(Object.keys(data.security), ["fraudAlerts"]);
     assert.equal(data.verifier.flagRate, null); assert.equal(data.learning.completionRate, null);
     assert.equal(data.snapshot.verifiedPercent, null); assert.equal(data.status.systems.operational, null);
     assert.equal(data.trend.length, 7);
     assert.deepEqual(data.status.incidents, { active: 0, criticalSos: 0, elevatedGuardianPanic: 0 });
     assert.equal(data.services.find(service => service.service === "api").state, "collecting");
-    assert.equal(data.services.find(service => service.service === "sms").state, "not_integrated");
+    assert.deepEqual(data.services.map(service => service.service).filter(name => ["sms", "maps"].includes(name)), []);
   } finally { restore(); }
 });
 
@@ -119,4 +122,27 @@ test("analytics and infrastructure routes use the existing permission model", ()
   assert.equal(routePermission(request("/health/infrastructure")), "health:read");
   assert.equal(can({ role: "admin", adminRole: "analyst" }, "overview:read"), true);
   assert.equal(can({ role: "user", adminRole: "superadmin" }, "overview:read"), false);
+});
+
+test("learning counts each user and module once: completed when the quiz is submitted, otherwise not completed", async () => {
+  const pair = (user, learning) => ({ _id: { user, learning } });
+  const restore = stubAll([
+    [OperationEvent, "aggregate", async pipeline => {
+      const group = pipeline.find(stage => stage.$group).$group;
+      if (group._id === "$entityId") return [{ _id: "aaaaaaaaaaaaaaaaaaaaaaa1", opens: 5 }, { _id: "aaaaaaaaaaaaaaaaaaaaaaa2", opens: 2 }];
+      return [pair("u1", "aaaaaaaaaaaaaaaaaaaaaaa1"), pair("u2", "aaaaaaaaaaaaaaaaaaaaaaa1"), pair("u3", "aaaaaaaaaaaaaaaaaaaaaaa2")];
+    }],
+    // Opened before open tracking existed: known only because the quiz was started.
+    [LearningProgress, "aggregate", async () => [pair("u4", "aaaaaaaaaaaaaaaaaaaaaaa2")]],
+    [LearningAttempt, "aggregate", async () => [pair("u1", "aaaaaaaaaaaaaaaaaaaaaaa1"), pair("u4", "aaaaaaaaaaaaaaaaaaaaaaa2"), pair("u5", "aaaaaaaaaaaaaaaaaaaaaaa2")]],
+    [Learning, "findById", id => ({ select() { return this; }, lean: async () => ({ _id: id, title: id.endsWith("2") ? "Breach flow basics" : "OTP safety" }) })],
+  ]);
+  try {
+    const learning = await learningOverview();
+    assert.deepEqual([learning.opened, learning.completed, learning.notCompleted, learning.completionRate], [5, 3, 2, 60]);
+    // Module 2 has more completions (2) than module 1 (1), even though module 1 was opened more often.
+    assert.deepEqual(learning.mostPopular, { title: "Breach flow basics", completions: 2, opens: 2 });
+    const data = await call(getExecutiveDashboard, "superadmin");
+    assert.deepEqual(Object.keys(data.learning).sort(), ["completed", "completionRate", "mostPopular", "notCompleted", "openTrackingSince", "opened"]);
+  } finally { restore(); }
 });

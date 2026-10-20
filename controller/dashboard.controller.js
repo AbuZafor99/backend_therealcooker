@@ -4,12 +4,11 @@ import sendResponse from "../utils/sendResponse.js";
 import { User } from "../model/user.model.js";
 import { Account } from "../model/account.model.js";
 import { EmergencySession } from "../model/emergencySession.model.js";
-import { Learning } from "../model/learning.model.js";
-import { SecurityAlert, AvailabilitySample, LearningProgress, ServerMetricSample } from "../model/operation.model.js";
+import { SecurityAlert, AvailabilitySample, ServerMetricSample } from "../model/operation.model.js";
 import { can } from "../utils/adminPermissions.js";
 import { DAY } from "../utils/reporting.js";
-import { reportingTimezone, reportingPeriod, previousPeriod, startOfToday, recentDays } from "../utils/reportingPeriods.js";
-import { PANIC_TYPES, ratio, activeIncidents, incidentActivity, guardianAlerts, fraudAlertCount, alertQuality, searches, activeUsers, newUsers, dailySeries, platformServices } from "../utils/dashboardMetrics.js";
+import { reportingTimezone, reportingPeriod, startOfToday, recentDays } from "../utils/reportingPeriods.js";
+import { PANIC_TYPES, ratio, activeIncidents, incidentActivity, guardianAlerts, fraudAlertCount, searches, learningOverview, activeUsers, newUsers, dailySeries, platformServices } from "../utils/dashboardMetrics.js";
 import { sampleEnvironment, latestServerMetrics } from "../utils/availability.js";
 import { gpuStatus, hostDescription } from "../utils/serverMetrics.js";
 import { databaseMetrics } from "../utils/databaseMetrics.js";
@@ -42,30 +41,20 @@ export const getDashboardStatus = catchAsync(async (req, res) => respond(res, aw
 
 export const getExecutiveDashboard = catchAsync(async (req, res) => {
   const now = new Date(), zone = reportingTimezone();
-  const week = reportingPeriod({ period: "week" }, now, zone), month = reportingPeriod({ period: "month" }, now, zone), lastWeek = previousPeriod(week, now);
-  const today = { from: startOfToday(now, zone), to: now }, thisWeek = { from: week.start, to: now }, thisMonth = { from: month.start, to: now }, previousWeek = { from: lastWeek.start, to: lastWeek.end };
+  const week = reportingPeriod({ period: "week" }, now, zone), month = reportingPeriod({ period: "month" }, now, zone);
+  const today = { from: startOfToday(now, zone), to: now }, thisWeek = { from: week.start, to: now }, thisMonth = { from: month.start, to: now };
   const trend = recentDays(7, now, zone);
   const canSeePeople = can(req.user, "users:read"), canSeeAlerts = can(req.user, "alerts:read");
   const [status, totalUsers, newThisWeek, activeToday, activeThisMonth, bankUsers, bankRows,
-    fraudToday, fraudWeek, fraudMonth, quality, previousQuality, incidentsToday, guardianToday, monthSearches,
-    [learning], [popular], daily, kycCounts, kycRecent, feed, services] = await Promise.all([
+    fraudToday, fraudWeek, fraudMonth, incidentsToday, guardianToday, monthSearches,
+    learning, daily, kycCounts, kycRecent, feed, services] = await Promise.all([
     liveStatus(now),
     User.countDocuments({ role: "user" }), newUsers(thisWeek), activeUsers(today), activeUsers(thisMonth),
     Account.distinct("user", bankAccounts),
     Account.aggregate([{ $match: bankAccounts }, { $group: { _id: "$bankName", users: { $addToSet: "$user" } } }, { $project: { _id: 0, bank: "$_id", users: { $size: "$users" } } }, { $sort: { users: -1, bank: 1 } }, { $limit: 6 }]),
     fraudAlertCount(today), fraudAlertCount(thisWeek), fraudAlertCount(thisMonth),
-    alertQuality(thisWeek), alertQuality(previousWeek),
     incidentActivity(today), guardianAlerts(today), searches(thisMonth),
-    LearningProgress.aggregate([
-      { $group: { _id: null, started: { $sum: 1 }, completed: { $sum: { $cond: [{ $ifNull: ["$completedAt", false] }, 1, 0] } },
-        averageDurationMs: { $avg: { $cond: [{ $ifNull: ["$completedAt", false] }, "$durationMs", null] } },
-        learners: { $addToSet: "$user" }, extra: { $addToSet: { $cond: [{ $gt: ["$additionalQuestions", 0] }, "$user", null] } } } },
-      { $project: { started: 1, completed: 1, averageDurationMs: 1, learners: { $size: "$learners" }, extra: { $size: { $setDifference: ["$extra", [null]] } } } },
-    ]),
-    LearningProgress.aggregate([
-      { $group: { _id: "$learning", users: { $addToSet: "$user" } } }, { $project: { users: { $size: "$users" } } }, { $sort: { users: -1, _id: 1 } }, { $limit: 1 },
-      { $lookup: { from: Learning.collection.name, localField: "_id", foreignField: "_id", as: "learning" } }, { $project: { users: 1, title: { $first: "$learning.title" } } },
-    ]),
+    learningOverview(),
     dailySeries({ from: trend.start, to: now }, trend.days, zone),
     User.aggregate([{ $match: { role: "user", "kyc.status": { $in: KYC_SUBMITTED } } }, { $group: { _id: "$kyc.status", count: { $sum: 1 } } }]),
     canSeePeople ? User.find({ role: "user", "kyc.status": { $in: KYC_SUBMITTED } }).sort({ "kyc.submittedAt": -1, updatedAt: -1 }).limit(5).select("name userId kyc.status kyc.submittedAt").lean() : null,
@@ -81,16 +70,12 @@ export const getExecutiveDashboard = catchAsync(async (req, res) => {
 
   respond(res, {
     generatedAt: now, timezone: zone,
-    periods: { week: { start: week.start, label: week.label }, month: { start: month.start, label: month.label }, lastWeek: { start: lastWeek.start, label: lastWeek.label } },
+    periods: { week: { start: week.start, label: week.label }, month: { start: month.start, label: month.label } },
     status,
     snapshot: { totalUsers, newThisWeek, activeToday, activeThisMonth,
       verifiedUsers: kyc.completed, verifiedPercent: ratio(kyc.completed, totalUsers),
       bankConnected: bankUsers.length, bankConnectedPercent: ratio(bankUsers.length, totalUsers) },
-    security: {
-      fraudAlerts: { today: fraudToday, week: fraudWeek, month: fraudMonth },
-      falsePositive: { rate: quality.rate, reviewed: quality.reviewed, previousRate: previousQuality.rate },
-      response: { averageMs: quality.averageResponseMs, samples: quality.responded, previousAverageMs: previousQuality.averageResponseMs },
-    },
+    security: { fraudAlerts: { today: fraudToday, week: fraudWeek, month: fraudMonth } },
     panics: { criticalSosToday: incidentsToday.criticalSos, guardianPanicsToday: incidentsToday.elevatedGuardianPanic, resolvedToday: incidentsToday.resolved,
       open: status.incidents.active, guardianAlertsToday: guardianToday },
     feed: feed?.map(alert => {
@@ -103,10 +88,7 @@ export const getExecutiveDashboard = catchAsync(async (req, res) => {
     }) ?? null,
     services,
     verifier: monthSearches,
-    learning: { started: learning?.started || 0, completed: learning?.completed || 0, notCompleted: (learning?.started || 0) - (learning?.completed || 0),
-      completionRate: ratio(learning?.completed || 0, learning?.started || 0), averageDurationMs: learning?.averageDurationMs ?? null,
-      learners: learning?.learners || 0, extraQuestionUsers: learning?.extra || 0, extraQuestionPercent: ratio(learning?.extra || 0, learning?.learners || 0),
-      mostPopular: popular ? { title: popular.title || null, users: popular.users } : null },
+    learning,
     trend: daily.map(row => ({ date: row.date, activeUsers: row.activeUsers, alerts: row.fraudAlerts, panics: row.incidents })),
     kyc: { pending: kyc.pending, verified: kyc.completed, rejected: kyc.failed,
       recent: kycRecent?.map(user => ({ id: user._id, name: user.name || null, userId: user.userId || null, status: user.kyc?.status, submittedAt: user.kyc?.submittedAt || null })) ?? null },
