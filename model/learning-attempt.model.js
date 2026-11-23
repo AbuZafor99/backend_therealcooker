@@ -17,6 +17,7 @@ const schema = new Schema({
   answers: [answerSchema],
   score: { type: Number, required: true },
   totalQuestions: { type: Number, required: true },
+  passed: { type: Boolean },
 }, { timestamps: true });
 schema.index({ learning: 1, createdAt: -1 });
 schema.index({ user: 1, learning: 1, createdAt: -1 });

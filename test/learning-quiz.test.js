@@ -88,7 +88,9 @@ test("completed lessons come only from the authenticated user's attempts", async
   const distinct = LearningAttempt.distinct;
   LearningAttempt.distinct = async (field, filter) => {
     assert.equal(field, "learning");
-    assert.deepEqual(filter, { user: userId });
+    assert.equal(filter.user, userId);
+    assert.deepEqual(filter.totalQuestions, { $gt: 0 });
+    assert.equal(Array.isArray(filter.$or), true);
     return [learningId];
   };
   try {

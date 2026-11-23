@@ -13,6 +13,25 @@ const validId = id => {
   if (!mongoose.isValidObjectId(id)) throw new AppError(400, "Invalid ID");
   return id;
 };
+export const PASSING_PERCENT = 80;
+export const isPassingScore = (score, totalQuestions) =>
+  totalQuestions > 0 && score * 100 >= totalQuestions * PASSING_PERCENT;
+const passingAttemptFilter = userId => ({
+  user: userId,
+  totalQuestions: { $gt: 0 },
+  $or: [
+    { passed: true },
+    {
+      passed: { $ne: false },
+      $expr: {
+        $gte: [
+          { $multiply: ["$score", 100] },
+          { $multiply: ["$totalQuestions", PASSING_PERCENT] },
+        ],
+      },
+    },
+  ],
+});
 const respond = (res, data, statusCode = 200) => sendResponse(res, { statusCode, success: true, message: "Learning quiz request successful", data });
 async function published(id) {
   const learning = await Learning.findOne({ _id: validId(id), isPublished: true });
@@ -31,18 +50,23 @@ export const submitAttempt = catchAsync(async (req, res) => {
   const learning = await published(req.params.id);
   if (req.body.quizVersion !== (learning.quizVersion || 1)) throw new AppError(409, "Quiz changed. Reload the quiz before submitting");
   const answers = gradeAnswers(learning.questions, req.body.answers);
-  const attempt = await LearningAttempt.create({ user: req.user._id, learning: learning._id, learningTitle: learning.title, quizVersion: learning.quizVersion || 1, answers, score: answers.filter(a => a.isCorrect).length, totalQuestions: answers.length });
+  const score = answers.filter(a => a.isCorrect).length;
+  const totalQuestions = answers.length;
+  const passed = isPassingScore(score, totalQuestions);
+  const attempt = await LearningAttempt.create({ user: req.user._id, learning: learning._id, learningTitle: learning.title, quizVersion: learning.quizVersion || 1, answers, score, totalQuestions, passed });
   await safelyTrack(async () => {
     const filter = { user: req.user._id, learning: learning._id, quizVersion: learning.quizVersion || 1 };
     const progress = await LearningProgress.findOne(filter);
     // Completion duration exists only when a quiz start was recorded; never invent a duration.
     if (progress) {
-      if (progress.completedAt) progress.additionalQuestions += answers.length;
-      else { progress.completedAt = new Date(); progress.durationMs = progress.completedAt - progress.startedAt; }
+      if (passed) {
+        if (progress.completedAt) progress.additionalQuestions += answers.length;
+        else { progress.completedAt = new Date(); progress.durationMs = progress.completedAt - progress.startedAt; }
+      }
       progress.attempts += 1; await progress.save();
     }
   });
-  await recordEvent({ kind: "learning_completed", user: req.user._id, entityType: "learning", entityId: String(learning._id), outcome: "quiz_submitted" });
+  await recordEvent({ kind: "learning_completed", user: req.user._id, entityType: "learning", entityId: String(learning._id), outcome: passed ? "quiz_passed" : "quiz_failed" });
   respond(res, attempt, 201);
 });
 const escapeRegex = value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -80,7 +104,7 @@ async function list(req, res, filter, admin) {
 export const getMyAttempts = catchAsync(async (req, res) => list(req, res, { learning: validId(req.params.id), user: req.user._id }, false));
 // Which lessons this user has finished. Requires a valid token on purpose: on the optional-auth feed an
 // expired token would read as a guest, and the user's Completed tags would briefly disappear.
-export const getMyCompletedLearnings = catchAsync(async (req, res) => respond(res, { learningIds: await LearningAttempt.distinct("learning", { user: req.user._id }) }));
+export const getMyCompletedLearnings = catchAsync(async (req, res) => respond(res, { learningIds: await LearningAttempt.distinct("learning", passingAttemptFilter(req.user._id)) }));
 export const getAdminAttempts = catchAsync(async (req, res) => list(req, res, { learning: validId(req.params.id) }, true));
 export const getUserAttempts = catchAsync(async (req, res) => list(req, res, { user: validId(req.params.userId) }, false));
 export const getAttemptDetails = catchAsync(async (req, res) => {
